@@ -13,6 +13,7 @@ Change events are delivered to ChatGPT through MCP events (signed webhooks, buil
 
 - [Running Agent Brain](docs/self-hosting.md): Docker, Cloudflare and the smoke test.
 - [Global agent rule](docs/agent-rule.md): connecting agent clients and recognising `agentBrain:` references.
+- [Best practices for agents](docs/best-practices.md): when to create brains and documents, what belongs in them, consolidation, conflicts, events and closing.
 - [Change events](docs/events.md): ChatGPT MCP events and the Claude Code channel.
 - [Website](docs/website.md): the read-only browser view, its sign-in and how Markdown is rendered.
 
