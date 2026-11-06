@@ -3,6 +3,15 @@ Agent Brain is an open-source shared workspace for the context of one task. Diff
 
 The first version should make shared context reliable without becoming a task manager or an agent orchestration platform. This is a draft product plan for review.
 
+# Status
+
+Phase 1 is implemented: an OAuth-protected MCP server with projects, brains, revision-checked Markdown documents, a change feed, and close with or without export. It runs on Cloudflare Workers or in Docker from the same code.
+
+- [Running Agent Brain](docs/self-hosting.md): Docker, Cloudflare and the smoke test.
+- [Global agent rule](docs/agent-rule.md): connecting agent clients and recognising `agentBrain:` references.
+
+The rest of this README is the product plan the implementation follows.
+
 # Agreed direction
 
 - Each brain belongs to a project and one task. The project name is enough to start; the task can be unnamed until its purpose becomes clear.
