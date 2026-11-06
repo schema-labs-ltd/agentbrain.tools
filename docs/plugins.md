@@ -7,6 +7,8 @@ This repository is also a plugin marketplace. It offers one plugin, **agentbrain
 
 With the plugin installed you don't need to add the connector or the [global agent rule](agent-rule.md) by hand, although the rule still helps in clients that load skills only when they seem relevant.
 
+**Already connected Agent Brain by hand?** Claude Code skips a plugin's MCP server when a server with the same URL is already configured, so `/mcp` shows only your existing `agent-brain` entry and no `plugin:agentbrain:agentbrain`. That is expected: the tools come from your existing connection and the plugin adds the skill. To have the plugin own the connection instead, remove the manual one (`claude mcp remove agent-brain --scope user`), restart Claude Code, then sign in to `plugin:agentbrain:agentbrain` in `/mcp`.
+
 ## Claude Code
 
 ```text
@@ -14,11 +16,11 @@ With the plugin installed you don't need to add the connector or the [global age
 /plugin install agentbrain@agentbrain
 ```
 
-Or in one step on Claude Code 2.1.275 or later: `/plugin install agentbrain --marketplace schema-labs-ltd/agentbrain.tools`. Then run `/mcp` and sign in to `agentbrain`. The skill is available as `/agentbrain:agent-brain` and loads on its own when a message contains an `agentBrain:` reference.
+Or in one step on Claude Code 2.1.275 or later: `/plugin install agentbrain --marketplace schema-labs-ltd/agentbrain.tools`. Then run `/mcp` and sign in to `plugin:agentbrain:agentbrain`; it shows "Needs authentication" until you do. The skill is available as `/agentbrain:agent-brain` and loads on its own when a message contains an `agentBrain:` reference.
 
 ## Claude (web and desktop)
 
-Open Customize → Plugins → Add → Add marketplace, enter `schema-labs-ltd/agentbrain.tools`, and install **agentbrain**. Connect the server from the plugin's Connectors tab. Plugins installed this way also sync to Claude Code.
+Open Customize → Plugins → Add → Add marketplace, enter `schema-labs-ltd/agentbrain.tools`, and install **agentbrain**. The MCP server is not connected automatically: open the plugin, go to its Connectors tab and connect Agent Brain there (or keep using an Agent Brain connector you already added). Plugins installed this way also sync to Claude Code.
 
 ## ChatGPT and Codex
 
