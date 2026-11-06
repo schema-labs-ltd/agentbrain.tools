@@ -9,6 +9,16 @@ With the plugin installed you don't need to add the connector or the [global age
 
 **Already connected Agent Brain by hand?** Claude Code skips a plugin's MCP server when a server with the same URL is already configured, so `/mcp` shows only your existing `agent-brain` entry and no `plugin:agentbrain:agentbrain`. That is expected: the tools come from your existing connection and the plugin adds the skill. To have the plugin own the connection instead, remove the manual one (`claude mcp remove agent-brain --scope user`), restart Claude Code, then sign in to `plugin:agentbrain:agentbrain` in `/mcp`.
 
+## Without the plugin
+
+The server itself serves the same guide, so any client connected to `https://agentbrain.tools/mcp` gets it, plugin or not:
+
+- the `read_guide` tool, which the server instructions ask agents to call once before their first write;
+- the `agent-brain` prompt (a slash command in Claude Code, the + menu in claude.ai);
+- the `agentbrain://guide` resource.
+
+All three return the body of `skills/agent-brain/SKILL.md`. After editing the skill, run `npm run sync-guide` to regenerate `src/core/guide.ts`; a test fails if they differ.
+
 ## Claude Code
 
 ```text

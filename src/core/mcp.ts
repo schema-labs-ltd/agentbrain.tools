@@ -4,6 +4,7 @@ import { z } from "zod";
 import { sha256Hex } from "./crypto.js";
 import type { EventService } from "./events.js";
 import { BrainError } from "./errors.js";
+import { GUIDE_MARKDOWN } from "./guide.js";
 import type { Scope, TokenInfo } from "./oauth.js";
 import type { Actor, BrainStore } from "./store.js";
 
@@ -11,7 +12,7 @@ export const SERVER_VERSION = "0.1.0";
 
 export const SERVER_INSTRUCTIONS = `Agent Brain holds the shared context for one task as a small set of Markdown documents that several agents can read and update.
 
-When the user gives you an agentBrain:<project>.<task> reference, call read_index with the whole reference first, then read_documents for only the documents you need. Every document has a revision. Pass the revision you read as base_revision when you replace, patch, rename or delete a document. A "conflict" error means another agent changed it: re-read the current version included in the error, reapply your change and retry. Never overwrite another agent's work blindly.
+Before your first write in a conversation, call read_guide once for the full practices (what to write, when to create documents, consolidation, conflicts, events, closing). When the user gives you an agentBrain:<project>.<task> reference, call read_index with the whole reference first, then read_documents for only the documents you need. Every document has a revision. Pass the revision you read as base_revision when you replace, patch, rename or delete a document. A "conflict" error means another agent changed it: re-read the current version included in the error, reapply your change and retry. Never overwrite another agent's work blindly.
 
 Create a brain only for work that must outlive one conversation or be shared with another agent, and check list_brains for an existing one for the same task first. Write what another agent could not cheaply rediscover: purpose, current state, decisions with reasons, findings with sources, dead ends, open questions and pointers to files, URLs, commits and issues. Never write secrets, raw logs or pasted files, copies of code or tickets, task assignments or instructions to other agents.
 
@@ -69,6 +70,34 @@ export function createMcpServer(store: BrainStore, auth: TokenInfo, events?: Eve
     const hash = await sha256Hex(JSON.stringify([op, args]));
     return store.idempotent(auth.userId, args.idempotency_key, hash, args.reference, fn);
   };
+
+  server.registerTool(
+    "read_guide",
+    {
+      title: "Read the Agent Brain guide",
+      description:
+        "Return the Agent Brain guide: how to pick up a reference, start a brain, end a session and close, and the best practices for what to write, when to create documents, size, consolidation, conflicts and events. Call it once before your first write in a conversation.",
+      inputSchema: {},
+      annotations: { readOnlyHint: true },
+    },
+    async (): Promise<CallToolResult> => ({ content: [{ type: "text", text: GUIDE_MARKDOWN }] }),
+  );
+
+  server.registerPrompt(
+    "agent-brain",
+    {
+      title: "Agent Brain guide",
+      description: "Load the Agent Brain guide and best practices into the conversation.",
+    },
+    () => ({ messages: [{ role: "user", content: { type: "text", text: `Follow this guide whenever you use Agent Brain in this conversation.\n\n${GUIDE_MARKDOWN}` } }] }),
+  );
+
+  server.registerResource(
+    "guide",
+    "agentbrain://guide",
+    { title: "Agent Brain guide", description: "How to use Agent Brain and its best practices.", mimeType: "text/markdown" },
+    (uri) => ({ contents: [{ uri: uri.href, mimeType: "text/markdown", text: GUIDE_MARKDOWN }] }),
+  );
 
   server.registerTool(
     "open_project",
