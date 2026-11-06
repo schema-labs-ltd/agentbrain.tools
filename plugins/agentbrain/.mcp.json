@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "agentbrain": {
+      "type": "http",
+      "url": "https://agentbrain.tools/mcp"
+    }
+  }
+}

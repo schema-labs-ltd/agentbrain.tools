@@ -1,0 +1,30 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "agentbrain",
+  "version": "1.0.0",
+  "description": "Shared Markdown context for one task that several agents can read and update, through the Agent Brain MCP server, with a skill that teaches agents how to use it well.",
+  "author": { "name": "Schema Labs", "url": "https://agentbrain.tools" },
+  "homepage": "https://agentbrain.tools",
+  "repository": "https://github.com/schema-labs-ltd/agentbrain.tools",
+  "keywords": ["agents", "context", "handover", "mcp", "markdown"],
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "Agent Brain",
+        "shortDescription": "Shared task context for agents",
+        "longDescription": "Agent Brain holds the context of one task as a small set of Markdown documents (Overview, Decisions, Findings, Handover) that different agents can read and update, even on different models or machines. Paste an agentBrain: reference into a conversation and the agent reads the index and only the documents it needs. Writes are revision-checked so agents never overwrite each other. It is not a task manager: it carries context, not assignments.",
+        "developerName": "Schema Labs",
+        "category": "Productivity",
+        "capabilities": ["Read documents", "Edit documents"],
+        "websiteURL": "https://agentbrain.tools",
+        "defaultPrompt": [
+          "Start an Agent Brain for this task and write what we know so far.",
+          "Pick up the agentBrain: reference I paste and summarise where things stand."
+        ],
+        "brandColor": "#4F46E5",
+        "composerIcon": "./assets/icon.svg",
+        "logo": "./assets/icon.svg"
+      }
+    }
+  }
+}
