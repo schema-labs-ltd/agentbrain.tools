@@ -6,6 +6,7 @@ import { OAuthService, type FetchFn } from "./oauth.js";
 import { migrate } from "./schema.js";
 import type { Sql } from "./sql.js";
 import { BrainStore, DEFAULT_LIMITS, type Limits } from "./store.js";
+import { WebSessionService } from "./websession.js";
 
 /** Runtime-independent configuration, read from environment variables or Worker bindings. */
 export interface InstanceConfig {
@@ -74,6 +75,7 @@ export function createInstance(
     setup = undefined;
     throw e;
   }));
-  const app = createApp({ publicUrl: config.PUBLIC_URL, store, oauth, events, ready, afterMcpRequest: deps.afterMcpRequest });
+  const sessions = new WebSessionService(sql, now);
+  const app = createApp({ publicUrl: config.PUBLIC_URL, store, oauth, events, sessions, ready, afterMcpRequest: deps.afterMcpRequest });
   return { app, store, oauth, events };
 }

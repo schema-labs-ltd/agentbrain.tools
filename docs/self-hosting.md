@@ -8,7 +8,7 @@ Every deployment needs three settings:
 | --- | --- |
 | `PUBLIC_URL` | The HTTPS base URL agents will reach, for example `https://brain.example.com`. Used as the OAuth issuer and resource. |
 | `OWNER_EMAIL` | The email for the single owner account. |
-| `OWNER_PASSWORD` | The owner's password, at least 12 characters. Changing it and restarting replaces the stored password. |
+| `OWNER_PASSWORD` | The owner's password, at least 12 characters. Changing it and restarting replaces the stored password. The same email and password sign in to the read-only [website](website.md). |
 
 Optional limits (defaults in brackets): `LIMIT_DOCUMENT_BYTES` (65536), `LIMIT_BRAIN_DOCUMENTS` (50), `LIMIT_BRAIN_BYTES` (1048576), `LIMIT_REVISIONS_PER_DOCUMENT` (50), `LIMIT_EVENTS_PER_BRAIN` (1000).
 
