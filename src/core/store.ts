@@ -1,5 +1,5 @@
 import { BrainError } from "./errors.js";
-import { formatReference, newDocumentId, newOpaqueId, parseReference } from "./ids.js";
+import { formatReference, newDocumentId, newOpaqueId, parseReference, type ParsedReference } from "./ids.js";
 import { one, type Sql } from "./sql.js";
 
 export interface Limits {
@@ -225,7 +225,7 @@ export class BrainStore {
         now,
       );
       this.appendEvent(id, "brain.created", null, null, actor);
-      return this.index(this.loadBrain(actor.userId, id));
+      return this.index(this.loadBrain(actor.userId, { brainId: id }));
     });
   }
 
@@ -266,7 +266,7 @@ export class BrainStore {
         brain.id,
       );
       this.appendEvent(brain.id, "brain.updated", null, null, actor);
-      return this.index(this.loadBrain(actor.userId, brain.id));
+      return this.index(this.loadBrain(actor.userId, { brainId: brain.id }));
     });
   }
 
@@ -513,7 +513,7 @@ export class BrainStore {
     return this.sql.transaction(() => {
       const brain = this.loadBrain(actor.userId, this.requireReference(reference));
       if (brain.status === "closed") {
-        return { reference: formatReference(brain.id), status: "closed", closedAt: iso(brain.closed_at!), alreadyClosed: true, export: null };
+        return { reference: formatReference(brain.project_id, brain.id), status: "closed", closedAt: iso(brain.closed_at!), alreadyClosed: true, export: null };
       }
       this.sql.run(`UPDATE brains SET status = 'closing' WHERE id = ?`, brain.id);
       const snapshot = withExport ? this.buildExport(brain) : null;
@@ -528,7 +528,7 @@ export class BrainStore {
         now,
         brain.id,
       );
-      return { reference: formatReference(brain.id), status: "closed", closedAt: iso(now), alreadyClosed: false, export: snapshot };
+      return { reference: formatReference(brain.project_id, brain.id), status: "closed", closedAt: iso(now), alreadyClosed: false, export: snapshot };
     });
   }
 
@@ -539,7 +539,7 @@ export class BrainStore {
     );
     return {
       format: "agentbrain-export/1",
-      reference: formatReference(brain.id),
+      reference: formatReference(brain.project_id, brain.id),
       project: { name: brain.project_name, token: brain.project_id },
       title: brain.title,
       description: brain.description,
@@ -575,9 +575,9 @@ export class BrainStore {
       }
       const result = fn();
       const brainId = (result as { reference?: string }).reference
-        ? parseReference((result as { reference: string }).reference)
+        ? parseReference((result as { reference: string }).reference)?.brainId
         : brainRef
-          ? parseReference(brainRef)
+          ? parseReference(brainRef)?.brainId
           : undefined;
       this.sql.run(
         `INSERT INTO idempotency (user_id, key, request_hash, brain_id, response, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
@@ -594,21 +594,24 @@ export class BrainStore {
 
   // ---------------------------------------------------------------- internals
 
-  private requireReference(reference: string): string {
-    const id = parseReference(reference);
-    if (!id) throw new BrainError("invalid_request", 'That is not a valid reference. Expected "agentBrain:" followed by 26 characters.');
-    return id;
+  private requireReference(reference: string): ParsedReference {
+    const parsed = parseReference(reference);
+    if (!parsed) {
+      throw new BrainError("invalid_request", 'That is not a valid reference. Expected "agentBrain:<project>.<task>", two 26-character identifiers joined by a dot.');
+    }
+    return parsed;
   }
 
   /** Load a brain the user owns. Other users' brains are indistinguishable from missing ones. */
-  private loadBrain(userId: string, id: string): BrainRow {
+  private loadBrain(userId: string, ref: ParsedReference): BrainRow {
     const row = one<BrainRow>(
       this.sql,
       `SELECT b.*, p.name AS project_name FROM brains b JOIN projects p ON p.id = b.project_id WHERE b.id = ? AND b.user_id = ?`,
-      id,
+      ref.brainId,
       userId,
     );
-    if (!row) throw new BrainError("not_found", "No brain with that reference is available to you.");
+    // The project part must match too, so a reference cannot be re-pointed at another project.
+    if (!row || (ref.projectId && row.project_id !== ref.projectId)) throw new BrainError("not_found", "No brain with that reference is available to you.");
     return row;
   }
 
@@ -782,7 +785,7 @@ export class BrainStore {
 
   private summary(row: BrainRow): BrainSummary {
     return {
-      reference: formatReference(row.id),
+      reference: formatReference(row.project_id, row.id),
       project: { name: row.project_name, token: row.project_id },
       title: row.title,
       description: row.description,

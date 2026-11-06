@@ -36,7 +36,7 @@ The rest of this README is the product plan the implementation follows.
 
 - The software will be open source, with a very simple launch experience targeted at Docker, Railway and Cloudflare.
 
-- References use the exact prefix `agentBrain:` followed by an unguessable identifier. A user-installed global agent rule recognises them and connects through the configured MCP server.
+- References take the form `agentBrain:<project>.<task>`: the stable project token and the task's brain identifier, both unguessable. A user-installed global agent rule recognises them and connects through the configured MCP server.
 
 - There is no website in the first version. Agents use the MCP server for everything, including closing a brain. The only browser pages are the minimal sign-in and consent screens that OAuth requires.
 
@@ -86,9 +86,14 @@ Initial defaults, configurable per deployment: 64 KB per document, 50 documents 
 
 # Proposed access model
 
-The shareable reference uses the exact prefix `agentBrain:` followed by a single opaque identifier of 26 lower-case Crockford base32 characters, for example `agentBrain:jwdb52vpvf0q2794nh0mv1ayk6`. The identifier encodes 128 bits from a cryptographically secure random source, not a predictable project name, counter or timestamp. It has no internal structure; in particular it does not encode the server, project or user. The reference identifies the brain and resolves to its project and task, but does not act as a password. OAuth and server-side access checks remain required.
+The shareable reference has the form `agentBrain:<project>.<task>`, for example `agentBrain:q4x9mz2kd0vn7w3rbt1yhe8c5a.jwdb52vpvf0q2794nh0mv1ayk6`.
 
-Each project also has a stable project token, generated the same way. Within one user's account, project names are unique (compared case-insensitively after trimming whitespace), so naming an existing project returns its token. The token stays the same for the life of the project and is shared by all of that project's brains.
+- `<project>` is the project's stable project token. Within one user's account, project names are unique (compared case-insensitively after trimming whitespace), so naming an existing project returns its token. The token stays the same for the life of the project, so every brain in a project shares the same first part.
+- `<task>` identifies the brain for one task within that project.
+
+Both parts are 26 lower-case Crockford base32 characters encoding 128 bits from a cryptographically secure random source, not a predictable project name, counter or timestamp. Neither part encodes the server or the user. The server checks that the task belongs to the named project, so a reference cannot be re-pointed at another project. The reference identifies the brain, but it does not act as a password: OAuth and server-side access checks remain required.
+
+References created before this format, which hold only the task identifier (`agentBrain:<task>`), are still accepted. Every response returns the full `<project>.<task>` form.
 
 OAuth identifies the connected client and the user authorising it. The server must separately check that the user owns the project and brain and that the client has permission for the requested operation. Knowing or guessing a reference must not grant access. Different users can have projects with the same name; these remain separate projects and their data is never combined.
 
