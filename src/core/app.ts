@@ -68,6 +68,7 @@ export function createApp(opts: AppOptions): Hono {
       token_endpoint_auth_methods_supported: ["none", "client_secret_post", "client_secret_basic"],
       revocation_endpoint_auth_methods_supported: ["none", "client_secret_post", "client_secret_basic"],
       authorization_response_iss_parameter_supported: true,
+      client_id_metadata_document_supported: true,
     });
   app.get("/.well-known/oauth-authorization-server", authServerMetadata);
   app.get("/.well-known/oauth-authorization-server/mcp", authServerMetadata);
@@ -95,9 +96,10 @@ export function createApp(opts: AppOptions): Hono {
 
   const html = (body: string, status = 200) => new Response(body, { status, headers: PAGE_HEADERS });
 
-  app.get("/authorize", (c) => {
+  app.get("/authorize", async (c) => {
     const params = new URL(c.req.url).searchParams;
     try {
+      await oauth.resolveClient(params.get("client_id"));
       const { request, clientName, scopes } = oauth.startAuthorization(params);
       return html(consentPage({ requestId: request.id, clientName, redirectHost: new URL(request.redirect_uri).host || request.redirect_uri, scopes }));
     } catch (e) {
@@ -162,6 +164,7 @@ export function createApp(opts: AppOptions): Hono {
   app.post("/token", async (c) => {
     const form = await c.req.parseBody();
     const creds = clientCredentials(c, form);
+    await oauth.resolveClient(creds.id);
     const client = await oauth.authenticateClient(creds.id, creds.secret);
     const grant = form.grant_type;
     let tokens;
@@ -180,6 +183,7 @@ export function createApp(opts: AppOptions): Hono {
   app.post("/revoke", async (c) => {
     const form = await c.req.parseBody();
     const creds = clientCredentials(c, form);
+    await oauth.resolveClient(creds.id);
     const client = await oauth.authenticateClient(creds.id, creds.secret);
     if (form.token) await oauth.revoke(client.client_id, String(form.token));
     return c.body(null, 200);

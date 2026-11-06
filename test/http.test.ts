@@ -93,6 +93,62 @@ describe("OAuth", () => {
   });
 });
 
+describe("client ID metadata documents", () => {
+  const CLIENT_ID = "https://chat.example.com/oauth/client.json";
+  const REDIRECT = "https://chat.example.com/oauth/callback";
+  const documentFetch = (doc: unknown) => {
+    const calls: string[] = [];
+    const fn = async (url: string) => {
+      calls.push(url);
+      return new Response(JSON.stringify(doc), { headers: { "content-type": "application/json" } });
+    };
+    return { fn, calls };
+  };
+
+  it("is advertised in the authorization server metadata", async () => {
+    const { fetch } = testInstance();
+    const asm = (await (await fetch(`${BASE}/.well-known/oauth-authorization-server`)).json()) as Record<string, unknown>;
+    expect(asm.client_id_metadata_document_supported).toBe(true);
+  });
+
+  it("signs in a client identified by its metadata URL, without registration", async () => {
+    const remote = documentFetch({ client_id: CLIENT_ID, client_name: "Example Chat", redirect_uris: [REDIRECT], token_endpoint_auth_method: "none" });
+    const { fetch } = testInstance({}, { fetch: remote.fn });
+    const tokens = await signIn(fetch, "unused", undefined, { clientId: CLIENT_ID, redirect: REDIRECT });
+    const agent = await connect(fetch, tokens.access_token);
+    const brain = await agent.call("create_brain", { project: "P" });
+    expect(brain.isError).toBe(false);
+    const changes = await agent.call("get_changes", { reference: brain.body.reference });
+    expect(changes.body.events[0].clientName).toBe("Example Chat");
+    // The document is cached rather than fetched on every request.
+    expect(remote.calls).toEqual([CLIENT_ID]);
+  });
+
+  it("rejects documents that do not match their URL, carry secrets, or use other redirect URIs", async () => {
+    const cases = [
+      { client_id: "https://other.example.com/client.json", redirect_uris: [REDIRECT] },
+      { client_id: CLIENT_ID, redirect_uris: [REDIRECT], client_secret: "s" },
+      { client_id: CLIENT_ID, redirect_uris: [REDIRECT], token_endpoint_auth_method: "private_key_jwt" },
+      { client_id: CLIENT_ID, redirect_uris: ["http://evil.example/cb"] },
+    ];
+    for (const doc of cases) {
+      const { fetch } = testInstance({}, { fetch: documentFetch(doc).fn });
+      await expect(authorize(fetch, CLIENT_ID, { redirect: REDIRECT })).rejects.toThrow(/no consent form: 400/);
+    }
+    const { fetch } = testInstance({}, { fetch: documentFetch({ client_id: CLIENT_ID, redirect_uris: [REDIRECT] }).fn });
+    await expect(authorize(fetch, CLIENT_ID, { redirect: "https://chat.example.com/other" })).rejects.toThrow(/no consent form: 400/);
+  });
+
+  it("never fetches private or non-HTTPS client IDs", async () => {
+    for (const id of ["https://127.0.0.1/client.json", "https://localhost/c.json", "https://chat.example.com/", "http://chat.example.com/c.json"]) {
+      const remote = documentFetch({ client_id: id, redirect_uris: [REDIRECT] });
+      const { fetch } = testInstance({}, { fetch: remote.fn });
+      await expect(authorize(fetch, id, { redirect: REDIRECT })).rejects.toThrow(/no consent form: 400/);
+      expect(remote.calls).toEqual([]);
+    }
+  });
+});
+
 describe("two agents sharing a brain over MCP", () => {
   it("lets two clients signed in as the same user share context and recover from a conflict", async () => {
     const { fetch } = testInstance();

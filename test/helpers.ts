@@ -3,14 +3,15 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { sha256Base64Url } from "../src/core/crypto.js";
 import { newSecret } from "../src/core/ids.js";
 import { createInstance } from "../src/core/instance.js";
+import type { FetchFn } from "../src/core/oauth.js";
 import { openSqlite } from "../src/node/sqlite.js";
 
 export const BASE = "https://brain.test";
 export const OWNER = { email: "owner@example.com", password: "correct horse battery" };
 
-export function testInstance(extra: Record<string, string> = {}) {
+export function testInstance(extra: Record<string, string> = {}, deps: { fetch?: FetchFn } = {}) {
   const sql = openSqlite(":memory:");
-  const instance = createInstance(sql, { PUBLIC_URL: BASE, OWNER_EMAIL: OWNER.email, OWNER_PASSWORD: OWNER.password, ...extra });
+  const instance = createInstance(sql, { PUBLIC_URL: BASE, OWNER_EMAIL: OWNER.email, OWNER_PASSWORD: OWNER.password, ...extra }, deps);
   const fetch = (input: RequestInfo | URL, init?: RequestInit) => Promise.resolve(instance.app.fetch(new Request(input, init)));
   return { ...instance, sql, fetch };
 }
@@ -65,9 +66,9 @@ export async function authorize(
   return { res, verifier, redirect };
 }
 
-export async function signIn(fetch: Fetch, name: string, scope?: string) {
-  const client = await registerClient(fetch, name);
-  const { res, verifier, redirect } = await authorize(fetch, client.client_id, { scope });
+export async function signIn(fetch: Fetch, name: string, scope?: string, clientIdOverride?: { clientId: string; redirect: string }) {
+  const client = clientIdOverride ? { client_id: clientIdOverride.clientId } : await registerClient(fetch, name);
+  const { res, verifier, redirect } = await authorize(fetch, client.client_id, { scope, redirect: clientIdOverride?.redirect });
   const location = new URL(res.headers.get("location")!);
   const code = location.searchParams.get("code");
   if (!code) throw new Error(`no code: ${res.status} ${location}`);

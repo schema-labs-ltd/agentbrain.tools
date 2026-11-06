@@ -1,7 +1,7 @@
 import type { Hono } from "hono";
 import { createApp } from "./app.js";
 import { hashPassword, verifyPassword } from "./crypto.js";
-import { OAuthService } from "./oauth.js";
+import { OAuthService, type FetchFn } from "./oauth.js";
 import { migrate } from "./schema.js";
 import type { Sql } from "./sql.js";
 import { BrainStore, DEFAULT_LIMITS, type Limits } from "./store.js";
@@ -48,11 +48,11 @@ export async function ensureOwner(store: BrainStore, email: string | undefined, 
   store.upsertUser(email, await hashPassword(password));
 }
 
-export function createInstance(sql: Sql, config: InstanceConfig): { app: Hono; store: BrainStore; oauth: OAuthService } {
+export function createInstance(sql: Sql, config: InstanceConfig, deps: { fetch?: FetchFn } = {}): { app: Hono; store: BrainStore; oauth: OAuthService } {
   if (!config.PUBLIC_URL) throw new Error("PUBLIC_URL must be set to the server's public base URL.");
   migrate(sql);
   const store = new BrainStore(sql, limitsFrom(config));
-  const oauth = new OAuthService(sql);
+  const oauth = new OAuthService(sql, Date.now, deps.fetch);
   let setup: Promise<void> | undefined;
   const ready = () => (setup ??= ensureOwner(store, config.OWNER_EMAIL, config.OWNER_PASSWORD).catch((e) => {
     setup = undefined;

@@ -103,11 +103,100 @@ export function parseScopes(scope: string | null | undefined): Scope[] {
   return [...new Set(requested)] as Scope[];
 }
 
+const CIMD_CACHE_MS = 24 * 60 * 60 * 1000;
+const CIMD_MAX_BYTES = 16 * 1024;
+
+/** Client ID Metadata Documents: the client_id is an HTTPS URL serving the client's metadata. */
+export function isMetadataDocumentClientId(clientId: string): boolean {
+  return clientId.startsWith("https://");
+}
+
+function privateHost(host: string): boolean {
+  const h = host.replace(/^\[|\]$/g, "").toLowerCase();
+  if (h === "localhost" || h.endsWith(".localhost") || h.endsWith(".local") || h.endsWith(".internal")) return true;
+  if (/^\d+\.\d+\.\d+\.\d+$/.test(h)) {
+    const [a, b] = h.split(".").map(Number) as [number, number];
+    return a === 10 || a === 127 || a === 0 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127);
+  }
+  return h.includes(":"); // any IPv6 literal
+}
+
+export type FetchFn = (input: string, init?: RequestInit) => Promise<Response>;
+
 export class OAuthService {
   constructor(
     private readonly sql: Sql,
     private readonly now: () => number = Date.now,
+    private readonly fetchFn: FetchFn = (input, init) => fetch(input, init),
   ) {}
+
+  // ------------------------------------------------------------ client ID metadata documents
+
+  /**
+   * When client_id is an HTTPS URL, fetch and validate its metadata document
+   * and cache it as a public client. Other client IDs are left alone.
+   */
+  async resolveClient(clientId: string | null | undefined): Promise<void> {
+    if (!clientId || !isMetadataDocumentClientId(clientId)) return;
+    const cached = one<{ created_at: number }>(this.sql, `SELECT created_at FROM oauth_clients WHERE client_id = ?`, clientId);
+    if (cached && this.now() - cached.created_at < CIMD_CACHE_MS) return;
+    const metadata = await this.fetchClientMetadata(clientId);
+    this.sql.run(
+      `INSERT INTO oauth_clients (client_id, client_secret_hash, metadata, created_at) VALUES (?, NULL, ?, ?)
+       ON CONFLICT (client_id) DO UPDATE SET metadata = excluded.metadata, created_at = excluded.created_at`,
+      clientId,
+      JSON.stringify(metadata),
+      this.now(),
+    );
+  }
+
+  private async fetchClientMetadata(clientId: string): Promise<ClientMetadata> {
+    const bad = (why: string) => new OAuthError("invalid_client", `Client metadata document rejected: ${why}`);
+    let url: URL;
+    try {
+      url = new URL(clientId);
+    } catch {
+      throw bad("client_id is not a valid URL.");
+    }
+    if (url.protocol !== "https:" || url.username || url.password || url.hash || url.pathname === "/" || privateHost(url.hostname)) {
+      throw bad("client_id must be a public HTTPS URL with a path.");
+    }
+    let res: Response;
+    try {
+      res = await this.fetchFn(url.toString(), { headers: { accept: "application/json" }, redirect: "manual", signal: AbortSignal.timeout(5000) });
+    } catch {
+      throw bad("it could not be fetched.");
+    }
+    if (!res.ok) throw bad(`fetching it returned HTTP ${res.status}.`);
+    const text = await res.text();
+    if (text.length > CIMD_MAX_BYTES) throw bad("it is too large.");
+    let doc: Record<string, unknown>;
+    try {
+      doc = JSON.parse(text) as Record<string, unknown>;
+    } catch {
+      throw bad("it is not JSON.");
+    }
+    if (doc.client_id !== clientId) throw bad("its client_id does not match the URL it was fetched from.");
+    if ("client_secret" in doc || "client_secret_expires_at" in doc) throw bad("it must not contain a client secret.");
+    const method = doc.token_endpoint_auth_method ?? "none";
+    if (method !== "none") throw bad(`token_endpoint_auth_method ${String(method)} is not supported; use none.`);
+    const redirectUris = doc.redirect_uris;
+    if (!Array.isArray(redirectUris) || redirectUris.length === 0 || redirectUris.length > 20) throw bad("redirect_uris must list between 1 and 20 URIs.");
+    for (const uri of redirectUris) {
+      if (typeof uri !== "string" || !validRedirectUri(uri)) throw bad(`redirect URI not allowed: ${String(uri)}`);
+    }
+    const grantTypes = (doc.grant_types as string[] | undefined) ?? ["authorization_code"];
+    if (!Array.isArray(grantTypes) || !grantTypes.includes("authorization_code")) throw bad("grant_types must include authorization_code.");
+    return {
+      redirect_uris: redirectUris as string[],
+      client_name: typeof doc.client_name === "string" ? doc.client_name.slice(0, 100) : url.host,
+      client_uri: typeof doc.client_uri === "string" ? doc.client_uri.slice(0, 500) : undefined,
+      token_endpoint_auth_method: "none",
+      grant_types: grantTypes.filter((g) => g === "authorization_code" || g === "refresh_token"),
+      response_types: ["code"],
+      scope: typeof doc.scope === "string" ? doc.scope : undefined,
+    };
+  }
 
   // ------------------------------------------------------------ clients
 
