@@ -1,0 +1,18 @@
+// Cloudflare Workers deployment. All state lives in one SQLite-backed Durable Object.
+// Set the owner sign-in with: npx wrangler secret put OWNER_EMAIL / OWNER_PASSWORD
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "agentbrain",
+  "main": "src/worker/index.ts",
+  "account_id": "0541ee774a215eeb782d626ffbbc8e6f",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "routes": [{ "pattern": "agentbrain.tools", "custom_domain": true }],
+  "workers_dev": false,
+  "vars": { "PUBLIC_URL": "https://agentbrain.tools" },
+  "durable_objects": {
+    "bindings": [{ "name": "AGENT_BRAIN", "class_name": "AgentBrainStore" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["AgentBrainStore"] }],
+  "observability": { "enabled": true }
+}

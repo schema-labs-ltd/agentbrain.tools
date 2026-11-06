@@ -1,0 +1,18 @@
+# Minimal self-hosted Agent Brain. Copy .env.example to .env and fill it in, then:
+#   docker compose up -d
+services:
+  agentbrain:
+    build: .
+    image: agentbrain:latest
+    restart: unless-stopped
+    ports:
+      - "8787:8787"
+    environment:
+      PUBLIC_URL: ${PUBLIC_URL:?Set PUBLIC_URL to the public HTTPS URL agents will use}
+      OWNER_EMAIL: ${OWNER_EMAIL:?Set OWNER_EMAIL}
+      OWNER_PASSWORD: ${OWNER_PASSWORD:?Set OWNER_PASSWORD (at least 12 characters)}
+    volumes:
+      - agentbrain-data:/data
+
+volumes:
+  agentbrain-data:
