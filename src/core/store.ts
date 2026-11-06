@@ -502,6 +502,12 @@ export class BrainStore {
     };
   }
 
+  /** Resolve an active brain the user owns, for event subscriptions. Throws like any other read. */
+  resolveActiveBrain(userId: string, reference: string): { id: string; reference: string; lastSeq: number } {
+    const brain = this.loadActiveBrain(userId, reference);
+    return { id: brain.id, reference: formatReference(brain.project_id, brain.id), lastSeq: brain.last_seq };
+  }
+
   // ---------------------------------------------------------------- close
 
   /**

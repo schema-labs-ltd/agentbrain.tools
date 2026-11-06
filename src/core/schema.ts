@@ -128,6 +128,34 @@ const MIGRATIONS: string[][] = [
       PRIMARY KEY (client_id, jti)
     )`,
   ],
+  [
+    // Webhook subscriptions for MCP events (ChatGPT). The events table is the outbox:
+    // each subscription remembers the last event sequence it delivered.
+    `CREATE TABLE event_subscriptions (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      client_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      args TEXT NOT NULL,
+      brain_id TEXT NOT NULL,
+      url TEXT NOT NULL,
+      secrets TEXT NOT NULL,
+      delivered_seq INTEGER NOT NULL,
+      attempts INTEGER NOT NULL DEFAULT 0,
+      next_attempt_at INTEGER NOT NULL DEFAULT 0,
+      expires_at INTEGER NOT NULL,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    )`,
+    `CREATE INDEX event_subscriptions_brain ON event_subscriptions (brain_id)`,
+    `CREATE INDEX event_subscriptions_user ON event_subscriptions (user_id)`,
+    `CREATE TABLE verified_callbacks (
+      user_id TEXT NOT NULL,
+      url TEXT NOT NULL,
+      verified_at INTEGER NOT NULL,
+      PRIMARY KEY (user_id, url)
+    )`,
+  ],
 ];
 
 export function migrate(sql: Sql): void {

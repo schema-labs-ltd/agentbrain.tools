@@ -1,6 +1,7 @@
 import type { Hono } from "hono";
 import { createApp } from "./app.js";
 import { hashPassword, verifyPassword } from "./crypto.js";
+import { EventService, type EventOptions } from "./events.js";
 import { OAuthService, type FetchFn } from "./oauth.js";
 import { migrate } from "./schema.js";
 import type { Sql } from "./sql.js";
@@ -48,16 +49,31 @@ export async function ensureOwner(store: BrainStore, email: string | undefined, 
   store.upsertUser(email, await hashPassword(password));
 }
 
-export function createInstance(sql: Sql, config: InstanceConfig, deps: { fetch?: FetchFn } = {}): { app: Hono; store: BrainStore; oauth: OAuthService } {
+export interface InstanceDeps {
+  /** Outbound fetch, for client metadata documents and event webhooks. */
+  fetch?: FetchFn;
+  now?: () => number;
+  events?: EventOptions;
+  /** Called after MCP requests; the runtime decides how to run delivery in the background. */
+  afterMcpRequest?: () => void;
+}
+
+export function createInstance(
+  sql: Sql,
+  config: InstanceConfig,
+  deps: InstanceDeps = {},
+): { app: Hono; store: BrainStore; oauth: OAuthService; events: EventService } {
   if (!config.PUBLIC_URL) throw new Error("PUBLIC_URL must be set to the server's public base URL.");
   migrate(sql);
-  const store = new BrainStore(sql, limitsFrom(config));
-  const oauth = new OAuthService(sql, Date.now, deps.fetch);
+  const now = deps.now ?? Date.now;
+  const store = new BrainStore(sql, limitsFrom(config), now);
+  const oauth = new OAuthService(sql, now, deps.fetch);
+  const events = new EventService(sql, store, deps.fetch, now, deps.events);
   let setup: Promise<void> | undefined;
   const ready = () => (setup ??= ensureOwner(store, config.OWNER_EMAIL, config.OWNER_PASSWORD).catch((e) => {
     setup = undefined;
     throw e;
   }));
-  const app = createApp({ publicUrl: config.PUBLIC_URL, store, oauth, ready });
-  return { app, store, oauth };
+  const app = createApp({ publicUrl: config.PUBLIC_URL, store, oauth, events, ready, afterMcpRequest: deps.afterMcpRequest });
+  return { app, store, oauth, events };
 }

@@ -2,14 +2,13 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { sha256Base64Url } from "../src/core/crypto.js";
 import { newSecret } from "../src/core/ids.js";
-import { createInstance } from "../src/core/instance.js";
-import type { FetchFn } from "../src/core/oauth.js";
+import { createInstance, type InstanceDeps } from "../src/core/instance.js";
 import { openSqlite } from "../src/node/sqlite.js";
 
 export const BASE = "https://brain.test";
 export const OWNER = { email: "owner@example.com", password: "correct horse battery" };
 
-export function testInstance(extra: Record<string, string> = {}, deps: { fetch?: FetchFn } = {}) {
+export function testInstance(extra: Record<string, string> = {}, deps: InstanceDeps = {}) {
   const sql = openSqlite(":memory:");
   const instance = createInstance(sql, { PUBLIC_URL: BASE, OWNER_EMAIL: OWNER.email, OWNER_PASSWORD: OWNER.password, ...extra }, deps);
   const fetch = (input: RequestInfo | URL, init?: RequestInit) => Promise.resolve(instance.app.fetch(new Request(input, init)));
