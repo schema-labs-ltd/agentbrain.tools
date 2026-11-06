@@ -38,19 +38,29 @@ export function newSecret(): string {
 }
 
 export const REFERENCE_PREFIX = "agentBrain:";
-const OPAQUE_ID = /^[0-9a-hjkmnp-tv-z]{26}$/;
+const ID = "[0-9a-hjkmnp-tv-z]{26}";
+const REFERENCE = new RegExp(`^(?:(${ID})\\.)?(${ID})$`);
 
-export function formatReference(id: string): string {
-  return `${REFERENCE_PREFIX}${id}`;
+/** A parsed reference. projectId is absent only for legacy single-identifier references. */
+export interface ParsedReference {
+  projectId?: string;
+  brainId: string;
+}
+
+/** Format a reference as agentBrain:<project token>.<brain ID>. */
+export function formatReference(projectId: string, brainId: string): string {
+  return `${REFERENCE_PREFIX}${projectId}.${brainId}`;
 }
 
 /**
- * Accept "agentBrain:<id>" or a bare identifier. Returns the normalised ID, or
- * undefined when the input is not a well-formed reference.
+ * Parse "agentBrain:<project>.<task>", with or without the prefix. The legacy
+ * single-identifier form "agentBrain:<task>" from before 2026-11-06 is still
+ * accepted. Returns undefined when the input is not a well-formed reference.
  */
-export function parseReference(input: string): string | undefined {
+export function parseReference(input: string): ParsedReference | undefined {
   let s = input.trim();
   if (s.startsWith(REFERENCE_PREFIX)) s = s.slice(REFERENCE_PREFIX.length);
-  s = s.toLowerCase();
-  return OPAQUE_ID.test(s) ? s : undefined;
+  const m = REFERENCE.exec(s.toLowerCase());
+  if (!m) return undefined;
+  return m[1] ? { projectId: m[1], brainId: m[2]! } : { brainId: m[2]! };
 }

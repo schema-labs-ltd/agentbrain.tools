@@ -28,13 +28,35 @@ function code(fn: () => unknown): string | undefined {
 }
 
 describe("references", () => {
-  it("are 26 Crockford base32 characters behind the agentBrain: prefix", () => {
+  it("take the form agentBrain:<project token>.<task>", () => {
     const { store, a1 } = setup();
     const brain = store.createBrain(a1, { project: "AFX Markets" });
-    expect(brain.reference).toMatch(/^agentBrain:[0-9a-hjkmnp-tv-z]{26}$/);
-    expect(parseReference(brain.reference)).toBe(brain.reference.slice("agentBrain:".length));
+    expect(brain.reference).toMatch(/^agentBrain:[0-9a-hjkmnp-tv-z]{26}\.[0-9a-hjkmnp-tv-z]{26}$/);
+    const parsed = parseReference(brain.reference)!;
+    expect(parsed.projectId).toBe(brain.project.token);
+    expect(brain.reference).toBe(`agentBrain:${brain.project.token}.${parsed.brainId}`);
     expect(parseReference("agentBrain:" + "I".repeat(26))).toBeUndefined();
     expect(parseReference("agentBrain:short")).toBeUndefined();
+    expect(parseReference(`agentBrain:${brain.project.token}.`)).toBeUndefined();
+  });
+
+  it("share the project part across every brain in the same project", () => {
+    const { store, a1 } = setup();
+    const first = parseReference(store.createBrain(a1, { project: "AFX Markets" }).reference)!;
+    const second = parseReference(store.createBrain(a1, { project: "afx markets" }).reference)!;
+    const other = parseReference(store.createBrain(a1, { project: "Other" }).reference)!;
+    expect(second.projectId).toBe(first.projectId);
+    expect(second.brainId).not.toBe(first.brainId);
+    expect(other.projectId).not.toBe(first.projectId);
+  });
+
+  it("reject a task paired with the wrong project, and still accept legacy single-identifier references", () => {
+    const { store, a1 } = setup();
+    const brain = parseReference(store.createBrain(a1, { project: "A" }).reference)!;
+    const otherProject = store.openProject(a1.userId, "B", true).token;
+    expect(code(() => store.getIndex(a1.userId, `agentBrain:${otherProject}.${brain.brainId}`))).toBe("not_found");
+    const legacy = store.getIndex(a1.userId, `agentBrain:${brain.brainId}`);
+    expect(legacy.reference).toBe(`agentBrain:${brain.projectId}.${brain.brainId}`);
   });
 });
 
@@ -231,7 +253,7 @@ describe("closing", () => {
     expect(closed.export?.documents.map((d) => d.title)).toEqual(["Overview", "Decisions"]);
     expect(closed.export?.documents[0]!.markdown).toBe("# Overview");
     expect(closed.export?.project.name).toBe("P");
-    const id = parseReference(brain.reference)!;
+    const id = parseReference(brain.reference)!.brainId;
     for (const table of ["documents", "revisions", "events", "idempotency"]) {
       expect(sql.all(`SELECT * FROM ${table} WHERE brain_id = ?`, id)).toHaveLength(0);
     }
