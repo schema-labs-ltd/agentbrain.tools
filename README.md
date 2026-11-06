@@ -176,5 +176,3 @@ These phases describe the build sequence, not delivery dates or a commitment to 
 - **Deployment baseline:** which runtime and storage combination should be the reference implementation, and which Cloudflare deployment model will be supported?
 
 - **Multiple instances:** is one configured server per agent profile sufficient initially, or is a trusted instance mapping needed from the first release?
-
-The simplest starting point is one private account, a few small Markdown documents per brain, revision-checked writes, a change feed and portable references. Broader collaboration can be added once that foundation works reliably.
