@@ -598,6 +598,78 @@ export class BrainStore {
     });
   }
 
+  // ---------------------------------------------------------------- website (read-only)
+
+  /** Every project with brain counts and last activity, newest activity first. */
+  projectsOverview(userId: string): ProjectOverview[] {
+    return this.sql
+      .all<{ id: string; name: string; created_at: number; active: number; closed: number; last: number | null }>(
+        `SELECT p.id, p.name, p.created_at,
+           (SELECT COUNT(*) FROM brains b WHERE b.project_id = p.id AND b.status = 'active') AS active,
+           (SELECT COUNT(*) FROM brains b WHERE b.project_id = p.id AND b.status <> 'active') AS closed,
+           (SELECT MAX(b.updated_at) FROM brains b WHERE b.project_id = p.id) AS last
+         FROM projects p WHERE p.user_id = ?
+         ORDER BY COALESCE(last, p.created_at) DESC, p.name`,
+        userId,
+      )
+      .map((r) => ({
+        name: r.name,
+        token: r.id,
+        activeBrains: r.active,
+        closedBrains: r.closed,
+        createdAt: iso(r.created_at),
+        lastActivityAt: iso(r.last ?? r.created_at),
+      }));
+  }
+
+  /** One project and all its brains, active and closed. Missing and other users' projects are not found. */
+  projectWithBrains(userId: string, token: string): { project: ProjectOverview; brains: BrainListing[] } {
+    const project = this.projectsOverview(userId).find((p) => p.token === token.trim().toLowerCase());
+    if (!project) throw new BrainError("not_found", "No project with that token is available to you.");
+    const rows = this.sql.all<BrainRow & { docs: number; bytes: number }>(
+      `SELECT b.*, p.name AS project_name,
+         (SELECT COUNT(*) FROM documents d WHERE d.brain_id = b.id AND d.deleted = 0) AS docs,
+         (SELECT COALESCE(SUM(d.bytes), 0) FROM documents d WHERE d.brain_id = b.id AND d.deleted = 0) AS bytes
+       FROM brains b JOIN projects p ON p.id = b.project_id
+       WHERE b.user_id = ? AND b.project_id = ?
+       ORDER BY CASE b.status WHEN 'active' THEN 0 ELSE 1 END, b.updated_at DESC`,
+      userId,
+      project.token,
+    );
+    return {
+      project,
+      brains: rows.map((r) => ({ ...this.summary(r), closedAt: r.closed_at ? iso(r.closed_at) : null, documents: r.docs, bytes: r.bytes })),
+    };
+  }
+
+  /** A brain's summary whether or not it is closed. Closed brains have no content left to show. */
+  describeBrain(userId: string, reference: string): BrainSummary & { closedAt: string | null } {
+    const row = this.loadBrain(userId, this.requireReference(reference));
+    return { ...this.summary(row), closedAt: row.closed_at ? iso(row.closed_at) : null };
+  }
+
+  /** The latest events of an active brain, newest first, with document titles where the document still exists. */
+  recentActivity(userId: string, reference: string, limit = 20): ActivityItem[] {
+    const brain = this.loadActiveBrain(userId, reference);
+    return this.sql
+      .all<{ seq: number; type: string; document_id: string | null; revision: number | null; actor: string; created_at: number; title: string | null; deleted: number | null }>(
+        `SELECT e.seq, e.type, e.document_id, e.revision, e.actor, e.created_at, d.title, d.deleted
+         FROM events e LEFT JOIN documents d ON d.brain_id = e.brain_id AND d.id = e.document_id
+         WHERE e.brain_id = ? ORDER BY e.seq DESC LIMIT ?`,
+        brain.id,
+        Math.min(Math.max(limit, 1), 100),
+      )
+      .map((r) => ({
+        seq: r.seq,
+        type: r.type,
+        documentId: r.document_id,
+        documentTitle: r.deleted ? null : r.title,
+        revision: r.revision,
+        ...parseActor(r.actor),
+        at: iso(r.created_at),
+      }));
+  }
+
   // ---------------------------------------------------------------- internals
 
   private requireReference(reference: string): ParsedReference {
@@ -821,6 +893,32 @@ export class BrainStore {
       },
     };
   }
+}
+
+export interface ProjectOverview {
+  name: string;
+  token: string;
+  activeBrains: number;
+  closedBrains: number;
+  createdAt: string;
+  lastActivityAt: string;
+}
+
+export interface BrainListing extends BrainSummary {
+  closedAt: string | null;
+  documents: number;
+  bytes: number;
+}
+
+export interface ActivityItem {
+  seq: number;
+  type: string;
+  documentId: string | null;
+  documentTitle: string | null;
+  revision: number | null;
+  client: string;
+  clientName: string | null;
+  at: string;
 }
 
 export interface WriteResult {

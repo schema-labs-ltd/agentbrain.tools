@@ -7,6 +7,8 @@ import { createMcpServer, SERVER_VERSION } from "./mcp.js";
 import { ALL_SCOPES, OAuthError, type OAuthService, type Scope, type TokenInfo } from "./oauth.js";
 import { consentPage, errorPage, PAGE_HEADERS } from "./pages.js";
 import type { BrainStore } from "./store.js";
+import { registerWebsite } from "./web.js";
+import type { WebSessionService } from "./websession.js";
 
 export interface AppOptions {
   /** Public base URL, for example https://agentbrain.tools (no trailing slash). */
@@ -19,6 +21,8 @@ export interface AppOptions {
   ready?: () => Promise<void>;
   /** Called after each MCP request that may have changed a brain, so pending events can be delivered. */
   afterMcpRequest?: () => void;
+  /** Browser sessions for the read-only website. Omit to serve only the MCP server and OAuth pages. */
+  sessions?: WebSessionService;
 }
 
 const MAX_MCP_BODY_BYTES = 2 * 1024 * 1024;
@@ -43,9 +47,13 @@ export function createApp(opts: AppOptions): Hono {
 
   // ------------------------------------------------------------------ discovery
 
-  app.get("/", (c) =>
-    c.text(`Agent Brain ${SERVER_VERSION}\n\nThis is an MCP server. Connect your agent to ${resource}\n`),
-  );
+  if (opts.sessions) {
+    registerWebsite(app, { base, store, sessions: opts.sessions });
+  } else {
+    app.get("/", (c) =>
+      c.text(`Agent Brain ${SERVER_VERSION}\n\nThis is an MCP server. Connect your agent to ${resource}\n`),
+    );
+  }
   app.get("/healthz", (c) => c.json({ ok: true, version: SERVER_VERSION }));
 
   const protectedResource = (c: Context) =>

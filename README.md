@@ -7,11 +7,14 @@ The first version should make shared context reliable without becoming a task ma
 
 Phase 1 is implemented: an OAuth-protected MCP server with projects, brains, revision-checked Markdown documents, a change feed, and close with or without export. It runs on Cloudflare Workers or in Docker from the same code.
 
+A read-only website lets the owner browse every project, task and document from a desktop or phone, with sanitised Markdown rendering. Sign in at the server's address (for example https://agentbrain.tools) with the same email and password used on the OAuth consent screen.
+
 Change events are delivered to ChatGPT through MCP events (signed webhooks, built into the server) and to Claude Code through channels (a small local bridge). Other clients poll the change feed.
 
 - [Running Agent Brain](docs/self-hosting.md): Docker, Cloudflare and the smoke test.
 - [Global agent rule](docs/agent-rule.md): connecting agent clients and recognising `agentBrain:` references.
 - [Change events](docs/events.md): ChatGPT MCP events and the Claude Code channel.
+- [Website](docs/website.md): the read-only browser view, its sign-in and how Markdown is rendered.
 
 The rest of this README is the product plan the implementation follows.
 
@@ -41,7 +44,7 @@ The rest of this README is the product plan the implementation follows.
 
 - References take the form `agentBrain:<project>.<task>`: the stable project token and the task's brain identifier, both unguessable. A user-installed global agent rule recognises them and connects through the configured MCP server.
 
-- There is no website in the first version. Agents use the MCP server for everything, including closing a brain. The only browser pages are the minimal sign-in and consent screens that OAuth requires.
+- The website is read-only. The owner can sign in to browse projects, tasks, documents, revision history and recent activity, but agents use the MCP server for every change, including closing a brain. (This replaces the earlier "no website" decision; Simon asked for a read-only view on 2026-11-06.)
 
 # How someone would use it
 

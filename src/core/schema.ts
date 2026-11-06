@@ -156,6 +156,21 @@ const MIGRATIONS: string[][] = [
       PRIMARY KEY (user_id, url)
     )`,
   ],
+  [
+    // Browser sessions for the read-only website. Only a hash of the cookie value is stored.
+    `CREATE TABLE web_sessions (
+      token_hash TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      expires_at INTEGER NOT NULL
+    )`,
+    // Failed website sign-ins per client address, to slow down password guessing.
+    `CREATE TABLE web_login_failures (
+      key TEXT PRIMARY KEY,
+      failures INTEGER NOT NULL,
+      window_start INTEGER NOT NULL
+    )`,
+  ],
 ];
 
 export function migrate(sql: Sql): void {
