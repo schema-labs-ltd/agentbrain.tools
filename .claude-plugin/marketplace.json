@@ -1,0 +1,14 @@
+{
+  "name": "agentbrain",
+  "description": "Agent Brain: shared Markdown context for one task across agents, models and machines.",
+  "owner": { "name": "Schema Labs", "url": "https://agentbrain.tools" },
+  "plugins": [
+    {
+      "name": "agentbrain",
+      "source": "./plugins/agentbrain",
+      "description": "The Agent Brain MCP server (https://agentbrain.tools/mcp) and a skill covering how to use it and the best practices.",
+      "version": "1.0.0",
+      "category": "productivity"
+    }
+  ]
+}
