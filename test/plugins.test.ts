@@ -39,3 +39,11 @@ describe("agentbrain plugin", () => {
     expect(skill).toContain("name: agent-brain");
   });
 });
+
+describe("guide served by the MCP server", () => {
+  it("matches the plugin skill body, so `npm run sync-guide` has been run", async () => {
+    const { GUIDE_MARKDOWN } = await import("../src/core/guide.js");
+    const skill = readFileSync(join(root, plugin, "skills/agent-brain/SKILL.md"), "utf8").replace(/^---\n[\s\S]*?\n---\n+/, "");
+    expect(GUIDE_MARKDOWN).toBe(skill);
+  });
+});

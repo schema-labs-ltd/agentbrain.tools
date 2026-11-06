@@ -160,6 +160,14 @@ describe("two agents sharing a brain over MCP", () => {
       expect.arrayContaining(["open_project", "create_brain", "read_index", "read_documents", "patch_document", "get_changes", "close_brain"]),
     );
 
+    expect(tools.tools.map((t) => t.name)).toContain("read_guide");
+    const guide = await claude.client.callTool({ name: "read_guide", arguments: {} });
+    expect((guide.content as { text: string }[])[0]!.text).toContain("# Agent Brain");
+    const prompt = await claude.client.getPrompt({ name: "agent-brain" });
+    expect(JSON.stringify(prompt.messages)).toContain("Handover");
+    const resource = await claude.client.readResource({ uri: "agentbrain://guide" });
+    expect((resource.contents[0] as { text: string }).text).toContain("# Agent Brain");
+
     const created = await claude.call("create_brain", { project: "AFX Markets", idempotency_key: "brain-1" });
     expect(created.isError).toBe(false);
     const reference = created.body.reference as string;

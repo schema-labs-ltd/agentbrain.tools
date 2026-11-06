@@ -19,7 +19,8 @@
     "typecheck": "tsc -p tsconfig.test.json && tsc -p tsconfig.worker.json",
     "test": "vitest run",
     "smoke": "tsx scripts/smoke.ts",
-    "channel": "tsx src/channel/main.ts"
+    "channel": "tsx src/channel/main.ts",
+    "sync-guide": "tsx scripts/sync-guide.ts"
   },
   "dependencies": {
     "@hono/node-server": "^2.1.6",
