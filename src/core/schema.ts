@@ -120,6 +120,14 @@ const MIGRATIONS: string[][] = [
       PRIMARY KEY (user_id, key)
     )`,
   ],
+  [
+    `CREATE TABLE client_assertion_jtis (
+      client_id TEXT NOT NULL,
+      jti TEXT NOT NULL,
+      expires_at INTEGER NOT NULL,
+      PRIMARY KEY (client_id, jti)
+    )`,
+  ],
 ];
 
 export function migrate(sql: Sql): void {

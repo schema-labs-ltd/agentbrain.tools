@@ -1,5 +1,6 @@
 import { sha256Base64Url, sha256Hex, timingSafeEqual } from "./crypto.js";
 import { newOpaqueId, newSecret } from "./ids.js";
+import { decodeJwt, verifyJwsSignature, type Jwk } from "./jwt.js";
 import { one, type Sql } from "./sql.js";
 
 export const SCOPES = {
@@ -33,11 +34,25 @@ export interface ClientMetadata {
   redirect_uris: string[];
   client_name?: string;
   client_uri?: string;
-  token_endpoint_auth_method: "none" | "client_secret_post" | "client_secret_basic";
+  token_endpoint_auth_method: "none" | "client_secret_post" | "client_secret_basic" | "private_key_jwt";
   grant_types: string[];
   response_types: string[];
   scope?: string;
+  /** For private_key_jwt clients (metadata documents only): inline keys or a URL serving them. */
+  jwks?: { keys: Jwk[] };
+  jwks_uri?: string;
 }
+
+/** A client assertion presented at the token or revocation endpoint (RFC 7523). */
+export interface ClientAssertion {
+  type: string | null;
+  value: string | null;
+}
+
+export const JWT_BEARER_ASSERTION = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer";
+const ASSERTION_MAX_LIFETIME_MS = 10 * 60 * 1000;
+const CLOCK_SKEW_MS = 60 * 1000;
+const JWKS_CACHE_MS = 60 * 60 * 1000;
 
 export interface RegisteredClient extends ClientMetadata {
   client_id: string;
@@ -150,16 +165,17 @@ export class OAuthService {
     );
   }
 
-  private async fetchClientMetadata(clientId: string): Promise<ClientMetadata> {
-    const bad = (why: string) => new OAuthError("invalid_client", `Client metadata document rejected: ${why}`);
+  /** Fetch a small JSON document from a public HTTPS URL, without following redirects. */
+  private async fetchPublicJson(target: string, what: string): Promise<Record<string, unknown>> {
+    const bad = (why: string) => new OAuthError("invalid_client", `${what} rejected: ${why}`);
     let url: URL;
     try {
-      url = new URL(clientId);
+      url = new URL(target);
     } catch {
-      throw bad("client_id is not a valid URL.");
+      throw bad("it is not a valid URL.");
     }
     if (url.protocol !== "https:" || url.username || url.password || url.hash || url.pathname === "/" || privateHost(url.hostname)) {
-      throw bad("client_id must be a public HTTPS URL with a path.");
+      throw bad("it must be a public HTTPS URL with a path.");
     }
     let res: Response;
     try {
@@ -170,16 +186,40 @@ export class OAuthService {
     if (!res.ok) throw bad(`fetching it returned HTTP ${res.status}.`);
     const text = await res.text();
     if (text.length > CIMD_MAX_BYTES) throw bad("it is too large.");
-    let doc: Record<string, unknown>;
     try {
-      doc = JSON.parse(text) as Record<string, unknown>;
+      const doc = JSON.parse(text) as unknown;
+      if (!doc || typeof doc !== "object" || Array.isArray(doc)) throw new Error();
+      return doc as Record<string, unknown>;
     } catch {
-      throw bad("it is not JSON.");
+      throw bad("it is not a JSON object.");
     }
+  }
+
+  private async fetchClientMetadata(clientId: string): Promise<ClientMetadata> {
+    const what = "Client metadata document";
+    const bad = (why: string) => new OAuthError("invalid_client", `${what} rejected: ${why}`);
+    const url = new URL(clientId);
+    const doc = await this.fetchPublicJson(clientId, what);
     if (doc.client_id !== clientId) throw bad("its client_id does not match the URL it was fetched from.");
     if ("client_secret" in doc || "client_secret_expires_at" in doc) throw bad("it must not contain a client secret.");
     const method = doc.token_endpoint_auth_method ?? "none";
-    if (method !== "none") throw bad(`token_endpoint_auth_method ${String(method)} is not supported; use none.`);
+    if (method !== "none" && method !== "private_key_jwt") {
+      throw bad(`token_endpoint_auth_method ${String(method)} is not supported; use none or private_key_jwt.`);
+    }
+    let jwks: { keys: Jwk[] } | undefined;
+    let jwksUri: string | undefined;
+    if (method === "private_key_jwt") {
+      if (doc.jwks !== undefined) {
+        const keys = (doc.jwks as { keys?: unknown })?.keys;
+        if (!Array.isArray(keys) || keys.length === 0 || keys.length > 20) throw bad("jwks must contain between 1 and 20 keys.");
+        jwks = { keys: keys as Jwk[] };
+      } else if (typeof doc.jwks_uri === "string") {
+        jwksUri = doc.jwks_uri;
+        new URL(jwksUri);
+      } else {
+        throw bad("private_key_jwt requires jwks or jwks_uri.");
+      }
+    }
     const redirectUris = doc.redirect_uris;
     if (!Array.isArray(redirectUris) || redirectUris.length === 0 || redirectUris.length > 20) throw bad("redirect_uris must list between 1 and 20 URIs.");
     for (const uri of redirectUris) {
@@ -191,7 +231,9 @@ export class OAuthService {
       redirect_uris: redirectUris as string[],
       client_name: typeof doc.client_name === "string" ? doc.client_name.slice(0, 100) : url.host,
       client_uri: typeof doc.client_uri === "string" ? doc.client_uri.slice(0, 500) : undefined,
-      token_endpoint_auth_method: "none",
+      token_endpoint_auth_method: method,
+      ...(jwks ? { jwks } : {}),
+      ...(jwksUri ? { jwks_uri: jwksUri } : {}),
       grant_types: grantTypes.filter((g) => g === "authorization_code" || g === "refresh_token"),
       response_types: ["code"],
       scope: typeof doc.scope === "string" ? doc.scope : undefined,
@@ -261,16 +303,81 @@ export class OAuthService {
   }
 
   /** Authenticate a client at the token or revocation endpoint. */
-  async authenticateClient(clientId: string | null, clientSecret: string | null) {
+  async authenticateClient(
+    clientId: string | null,
+    clientSecret: string | null,
+    assertion: ClientAssertion = { type: null, value: null },
+    audiences: string[] = [],
+  ) {
+    if (!clientId && assertion.value) {
+      // With private_key_jwt, the client may identify itself only through the assertion.
+      try {
+        const iss = decodeJwt(assertion.value).payload.iss;
+        if (typeof iss === "string") clientId = iss;
+      } catch {
+        throw new OAuthError("invalid_client", "The client assertion is malformed.", 401);
+      }
+      await this.resolveClient(clientId);
+    }
     if (!clientId) throw new OAuthError("invalid_client", "Client authentication is required.", 401);
     const client = this.getClient(clientId);
     if (!client) throw new OAuthError("invalid_client", "Unknown client.", 401);
+    if (client.token_endpoint_auth_method === "private_key_jwt") {
+      await this.verifyClientAssertion(client, assertion, audiences);
+      return client;
+    }
+    if (assertion.value) throw new OAuthError("invalid_client", "This client does not use private_key_jwt.", 401);
     if (client.secretHash) {
       if (!clientSecret || !timingSafeEqual(await sha256Hex(clientSecret), client.secretHash)) {
         throw new OAuthError("invalid_client", "Client authentication failed.", 401);
       }
     }
     return client;
+  }
+
+  private jwksCache = new Map<string, { keys: Jwk[]; fetchedAt: number }>();
+
+  private async clientKeys(client: ClientMetadata, refresh: boolean): Promise<Jwk[]> {
+    if (client.jwks) return client.jwks.keys;
+    if (!client.jwks_uri) return [];
+    const cached = this.jwksCache.get(client.jwks_uri);
+    if (cached && !refresh && this.now() - cached.fetchedAt < JWKS_CACHE_MS) return cached.keys;
+    const doc = await this.fetchPublicJson(client.jwks_uri, "Client JWKS");
+    const keys = Array.isArray(doc.keys) ? (doc.keys as Jwk[]).slice(0, 20) : [];
+    this.jwksCache.set(client.jwks_uri, { keys, fetchedAt: this.now() });
+    return keys;
+  }
+
+  /** RFC 7523 client authentication: a signed JWT whose iss and sub are the client_id. */
+  private async verifyClientAssertion(
+    client: ClientMetadata & { client_id: string },
+    assertion: ClientAssertion,
+    audiences: string[],
+  ): Promise<void> {
+    const fail = (why: string) => new OAuthError("invalid_client", `Client assertion rejected: ${why}`, 401);
+    if (assertion.type !== JWT_BEARER_ASSERTION || !assertion.value) throw fail("a jwt-bearer client_assertion is required.");
+    let jwt;
+    try {
+      jwt = decodeJwt(assertion.value);
+    } catch {
+      throw fail("it is malformed.");
+    }
+    let valid = await verifyJwsSignature(jwt, await this.clientKeys(client, false));
+    if (!valid && client.jwks_uri) valid = await verifyJwsSignature(jwt, await this.clientKeys(client, true));
+    if (!valid) throw fail("the signature does not verify against the client's keys.");
+    const { iss, sub, aud, exp, nbf, jti } = jwt.payload as { iss?: unknown; sub?: unknown; aud?: unknown; exp?: unknown; nbf?: unknown; jti?: unknown };
+    if (iss !== client.client_id || sub !== client.client_id) throw fail("iss and sub must equal the client_id.");
+    const auds = Array.isArray(aud) ? aud : [aud];
+    if (!auds.some((a) => typeof a === "string" && audiences.includes(a.replace(/\/+$/, "")))) throw fail("aud does not name this server.");
+    const now = this.now();
+    if (typeof exp !== "number" || exp * 1000 < now - CLOCK_SKEW_MS) throw fail("it has expired.");
+    if (exp * 1000 > now + ASSERTION_MAX_LIFETIME_MS + CLOCK_SKEW_MS) throw fail("its lifetime is too long.");
+    if (typeof nbf === "number" && nbf * 1000 > now + CLOCK_SKEW_MS) throw fail("it is not yet valid.");
+    if (typeof jti !== "string" || !jti || jti.length > 256) throw fail("a jti is required.");
+    this.sql.run(`DELETE FROM client_assertion_jtis WHERE expires_at < ?`, now - CLOCK_SKEW_MS);
+    const used = one(this.sql, `SELECT 1 AS used FROM client_assertion_jtis WHERE client_id = ? AND jti = ?`, client.client_id, jti);
+    if (used) throw fail("it has already been used.");
+    this.sql.run(`INSERT INTO client_assertion_jtis (client_id, jti, expires_at) VALUES (?, ?, ?)`, client.client_id, jti, exp * 1000);
   }
 
   // ------------------------------------------------------------ authorization requests

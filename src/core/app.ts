@@ -1,6 +1,7 @@
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { Hono, type Context } from "hono";
 import { verifyPassword } from "./crypto.js";
+import { SUPPORTED_SIGNING_ALGS } from "./jwt.js";
 import { createMcpServer, SERVER_VERSION } from "./mcp.js";
 import { ALL_SCOPES, OAuthError, type OAuthService, type Scope, type TokenInfo } from "./oauth.js";
 import { consentPage, errorPage, PAGE_HEADERS } from "./pages.js";
@@ -65,8 +66,10 @@ export function createApp(opts: AppOptions): Hono {
       response_modes_supported: ["query"],
       grant_types_supported: ["authorization_code", "refresh_token"],
       code_challenge_methods_supported: ["S256"],
-      token_endpoint_auth_methods_supported: ["none", "client_secret_post", "client_secret_basic"],
-      revocation_endpoint_auth_methods_supported: ["none", "client_secret_post", "client_secret_basic"],
+      token_endpoint_auth_methods_supported: ["none", "client_secret_post", "client_secret_basic", "private_key_jwt"],
+      token_endpoint_auth_signing_alg_values_supported: SUPPORTED_SIGNING_ALGS,
+      revocation_endpoint_auth_methods_supported: ["none", "client_secret_post", "client_secret_basic", "private_key_jwt"],
+      revocation_endpoint_auth_signing_alg_values_supported: SUPPORTED_SIGNING_ALGS,
       authorization_response_iss_parameter_supported: true,
       client_id_metadata_document_supported: true,
     });
@@ -159,13 +162,19 @@ export function createApp(opts: AppOptions): Hono {
     return { id: form.client_id ? String(form.client_id) : null, secret: form.client_secret ? String(form.client_secret) : null };
   };
 
+  const assertionAudiences = [base, `${base}/token`, `${base}/revoke`];
   const str = (v: unknown) => (v == null || v === "" ? null : String(v));
 
   app.post("/token", async (c) => {
     const form = await c.req.parseBody();
     const creds = clientCredentials(c, form);
     await oauth.resolveClient(creds.id);
-    const client = await oauth.authenticateClient(creds.id, creds.secret);
+    const client = await oauth.authenticateClient(
+      creds.id,
+      creds.secret,
+      { type: str(form.client_assertion_type), value: str(form.client_assertion) },
+      assertionAudiences,
+    );
     const grant = form.grant_type;
     let tokens;
     if (grant === "authorization_code") {
@@ -184,7 +193,12 @@ export function createApp(opts: AppOptions): Hono {
     const form = await c.req.parseBody();
     const creds = clientCredentials(c, form);
     await oauth.resolveClient(creds.id);
-    const client = await oauth.authenticateClient(creds.id, creds.secret);
+    const client = await oauth.authenticateClient(
+      creds.id,
+      creds.secret,
+      { type: str(form.client_assertion_type), value: str(form.client_assertion) },
+      assertionAudiences,
+    );
     if (form.token) await oauth.revoke(client.client_id, String(form.token));
     return c.body(null, 200);
   });
