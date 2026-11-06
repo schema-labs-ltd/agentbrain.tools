@@ -7,7 +7,11 @@ The first version should make shared context reliable without becoming a task ma
 
 - Each brain belongs to a project and one task. The project name is enough to start; the task can be unnamed until its purpose becomes clear.
 
+- Each project has a stable, unique project token. Naming the same project again resolves to the same project token rather than creating a duplicate.
+
 - Multiple authorised agents can work with a brain at the same time.
+
+- The first version is single-user. The agents sharing a brain are different models, or the same model on different computers, all acting for the same user. There is no sharing between users.
 
 - A reference can be pasted into an issue, email or chat so another agent can find the brain.
 
@@ -25,15 +29,17 @@ The first version should make shared context reliable without becoming a task ma
 
 - References use the exact prefix `agentBrain:` followed by an unguessable identifier. A user-installed global agent rule recognises them and connects through the configured MCP server.
 
+- There is no website in the first version. Agents use the MCP server for everything, including closing a brain. The only browser pages are the minimal sign-in and consent screens that OAuth requires.
+
 # How someone would use it
 
-1. The user connects an agent client to Agent Brain through OAuth and gives it access to the appropriate project.
+1. The user connects an agent client to Agent Brain through OAuth. The connection acts for that user and can reach their projects.
 
-2. The agent requests a brain for “AFX Markets”. The service returns a unique reference and a website URL. A title or task description is optional.
+2. The agent requests a brain for “AFX Markets”. If the user already has a project with that name, the service uses its existing project token; otherwise it creates the project. The service returns a unique brain reference. A title or task description is optional.
 
 3. The agent writes the current context, findings and decisions. The service exposes a small index describing the available documents and their revisions.
 
-4. The user pastes the reference into another agent’s conversation and explains what they want that agent to do. That agent authenticates, reads the index and fetches only the relevant documents.
+4. The user pastes the reference into another agent’s conversation and explains what they want that agent to do. That agent may use a different model or run on a different computer, but it authenticates as the same user. It reads the index and fetches only the relevant documents.
 
 5. Both agents contribute. Changes become visible through revision-aware reads and, where supported, notifications. Neither agent needs access to the other’s filesystem or conversation.
 
@@ -57,13 +63,25 @@ These are suggested defaults, not a compulsory form for every brain. A specialis
 
 The index should contain each document’s title, short description, stable ID and current revision. Agents should read the index first and retrieve selected documents rather than pulling the entire brain on every turn. Tool responses can carry structured metadata alongside the Markdown body.
 
+Agents can create, replace, patch, rename and delete documents. A rename changes the title and description but keeps the stable ID. Renames and deletions are revision-checked like any other write, so consolidation (for example merging two documents and deleting one) cannot remove content another agent has just changed. A deleted document's ID is not reused.
+
 To control growth, set explicit document and brain size limits. When content approaches them, agents should consolidate repeated material, preserve decisions and evidence, and split only where the subject warrants it. The service can enforce limits and detect stale writes, but should not silently rewrite meaning. Conflicting interpretations should remain visible until an agent can resolve them from evidence.
+
+Limits are enforced in two stages:
+
+- **Soft limit (80% of a hard limit):** the write succeeds, and the response includes a warning with the current size and the limit, telling the agent to consolidate.
+
+- **Hard limit:** a write that would exceed it is rejected without changing anything. The error states the limit, the current size and the size the write would have produced, so the agent can consolidate and retry.
+
+Initial defaults, configurable per deployment: 64 KB per document, 50 documents and 1 MB in total per brain, and the last 50 revisions of each document kept while the brain is active.
 
 # Proposed access model
 
-The shareable reference uses the exact prefix `agentBrain:`, for example `agentBrain:sdfuhisdufg87t.ydsgf76gsdf`. Generate its opaque identifier using a cryptographically secure random source, not a predictable project name, counter or timestamp. The example illustrates the recognisable format; the final identifier length and component layout should provide ample entropy and collision resistance. The reference identifies the brain and resolves to its project and task, but does not act as a password. OAuth and server-side access checks remain required.
+The shareable reference uses the exact prefix `agentBrain:` followed by a single opaque identifier of 26 lower-case Crockford base32 characters, for example `agentBrain:jwdb52vpvf0q2794nh0mv1ayk6`. The identifier encodes 128 bits from a cryptographically secure random source, not a predictable project name, counter or timestamp. It has no internal structure; in particular it does not encode the server, project or user. The reference identifies the brain and resolves to its project and task, but does not act as a password. OAuth and server-side access checks remain required.
 
-OAuth identifies the connected client and the user or organisation authorising it. The server must separately check permission for the project, brain and requested operation. Knowing or guessing a reference must not grant access, and giving two projects the same name must not combine their data.
+Each project also has a stable project token, generated the same way. Within one user's account, project names are unique (compared case-insensitively after trimming whitespace), so naming an existing project returns its token. The token stays the same for the life of the project and is shared by all of that project's brains.
+
+OAuth identifies the connected client and the user authorising it. The server must separately check that the user owns the project and brain and that the client has permission for the requested operation. Knowing or guessing a reference must not grant access. Different users can have projects with the same name; these remain separate projects and their data is never combined.
 
 Keep credentials out of references, documents and exports. Use separate permissions for reading, writing and closing a brain, with revocation enforced on subsequent calls and event delivery. Record the authenticated actor and client for changes; a model name supplied by a client is descriptive, not proof of identity.
 
@@ -87,7 +105,7 @@ Writes that must stay consistent, such as adding a document and updating the ind
 
 # Events without orchestration
 
-Useful events include brain created, document created, document updated and brain closing. Each event should contain a stable event ID, sequence, affected document ID and revision, authenticated actor and timestamp. Keep document bodies out of notifications by default; an authorised recipient can fetch the current content.
+Useful events include brain created, document created, document updated, document renamed, document deleted, brain closing and brain closed. Each event should contain a stable event ID, sequence, affected document ID and revision, authenticated actor and timestamp. Keep document bodies out of notifications by default; an authorised recipient can fetch the current content.
 
 MCP resource notifications may provide a suitable change signal where the selected protocol version and client support subscriptions. They do not guarantee that every client will wake a model, start a new turn or act while disconnected. Verify those behaviours in the actual clients chosen for the first release.
 
@@ -103,7 +121,7 @@ For an export, return a portable ZIP or blob containing the Markdown documents, 
 
 An export cannot be both permanently deleted and indefinitely available for download. A practical first design is a short-lived, authenticated export download, with its expiry made explicit. If export preparation fails, keep the brain in a recoverable closing state and allow a safe retry or an explicit close without export. Repeated close requests should return a consistent outcome, not recreate data or produce conflicting snapshots.
 
-After closure, remove task documents, revisions, search entries and event payloads, invalidate access to the closed brain and expire temporary exports. Define how backups and minimal operational logs expire before promising immediate deletion of every copy. The project container can remain for other tasks; closing one brain must not delete its siblings. Receiving clients and independently saved archives remain outside the service’s deletion boundary.
+After closure, remove task documents, revisions, any derived indexes and event payloads, invalidate access to the closed brain and expire temporary exports. Define how backups and minimal operational logs expire before promising immediate deletion of every copy. The project container can remain for other tasks; closing one brain must not delete its siblings. Receiving clients and independently saved archives remain outside the service’s deletion boundary.
 
 # Open source and simple deployment
 
@@ -123,9 +141,11 @@ Each deployment needs a stable reachable HTTPS endpoint for remote agents, corre
 
 ## Phase 1 Prove shared context
 
-Build a small website, an OAuth-protected remote MCP endpoint and durable storage. Support project lookup or creation within the authorised account, brain creation, index and document reads, revision-checked writes and changes since a cursor. Keep the website focused on connection, browsing and lifecycle controls rather than a task board.
+Build an OAuth-protected remote MCP endpoint and durable storage, with only the sign-in and consent pages OAuth needs. Support project lookup or creation by name within the user's account (returning the stable project token), brain creation, index and document reads, revision-checked writes (including rename and delete) and changes since a cursor. Package it as the Docker reference deployment.
 
-Prove the core flow with two different agent clients on separate machines. Each should be able to resolve the same reference, contribute Markdown and recover from a deliberate edit conflict without losing the other’s work.
+Publish the first version of the global agent rule, configured for one trusted server per agent profile.
+
+Prove the core flow with two different agent clients on separate machines, signed in as the same user. Each should be able to resolve the same reference through the global rule, contribute Markdown and recover from a deliberate edit conflict without losing the other’s work.
 
 ## Phase 2 Add reliable notifications
 
@@ -135,13 +155,19 @@ Add document change events, supported MCP notifications and reconnect catch-up. 
 
 Add close without export, close with export, deletion cleanup and clear export expiry. Test close during an active write, interrupted export, retried close and attempted access after closure. Apply document limits and consolidation guidance before opening the service to longer-running tasks.
 
+## Phase 4 Validate every deployment target
+
+Add the Railway template and the Cloudflare deployment. Run the same acceptance suite against Docker, Railway and Cloudflare, including durable data surviving restart and upgrade. Test the global agent rule in each initial client against each target, and publish the setup guide.
+
 These phases describe the build sequence, not delivery dates or a commitment to a particular technology stack.
 
 # Acceptance criteria
 
 - Two authorised agents on different machines can use one reference to read and update the same brain.
 
-- An unauthorised client cannot read a brain merely by possessing its reference.
+- Naming an existing project returns its existing project token instead of creating a duplicate.
+
+- An unauthorised client cannot read a brain merely by possessing its reference, and one user can never read another user's brains.
 
 - Stale writes are rejected, retries are idempotent and concurrent contributions are preserved.
 
@@ -163,9 +189,9 @@ These phases describe the build sequence, not delivery dates or a commitment to 
 
 - **Initial clients:** which two or three agent clients should define the first compatibility tests?
 
-- **Access scope:** should access normally cover a whole project, with narrower brain-level grants when needed, or should every brain start separately scoped?
+- **Access scope:** the first version is single-user, so a connection can reach all of that user's projects. Should a later version allow narrower project- or brain-level grants per client, and should sharing between users ever be added?
 
-- **Limits:** what document size, total brain size and change-history retention are appropriate for the first version?
+- **Limits:** are the initial defaults (64 KB per document, 50 documents and 1 MB per brain, 50 revisions per document) right once real tasks have been tried?
 
 - **Export lifecycle:** which format and temporary download period should be supported, and should exports include revision history or only final documents?
 
