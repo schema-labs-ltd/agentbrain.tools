@@ -1,5 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import type { Hono } from "hono";
+import type { EventService } from "../core/events.js";
 import { createInstance, type InstanceConfig } from "../core/instance.js";
 import type { Row, Sql, SqlValue } from "../core/sql.js";
 
@@ -35,14 +36,36 @@ function durableObjectSql(storage: DurableObjectStorage): Sql {
  */
 export class AgentBrainStore extends DurableObject<Env> {
   private readonly app: Hono;
+  private readonly events: EventService;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
-    this.app = createInstance(durableObjectSql(ctx.storage), env).app;
+    const instance = createInstance(durableObjectSql(ctx.storage), env, {
+      afterMcpRequest: () => this.ctx.waitUntil(this.deliver()),
+    });
+    this.app = instance.app;
+    this.events = instance.events;
   }
 
   override fetch(request: Request): Promise<Response> {
     return Promise.resolve(this.app.fetch(request));
+  }
+
+  /** Retries wake the object through its alarm. */
+  override async alarm(): Promise<void> {
+    await this.deliver();
+  }
+
+  private async deliver(): Promise<void> {
+    try {
+      const next = await this.events.deliver();
+      if (next) {
+        const current = await this.ctx.storage.getAlarm();
+        if (!current || current > next) await this.ctx.storage.setAlarm(next);
+      }
+    } catch (e) {
+      console.error("event delivery failed", e);
+    }
   }
 }
 

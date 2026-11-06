@@ -2,6 +2,7 @@ import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/
 import { Hono, type Context } from "hono";
 import { verifyPassword } from "./crypto.js";
 import { SUPPORTED_SIGNING_ALGS } from "./jwt.js";
+import type { EventService } from "./events.js";
 import { createMcpServer, SERVER_VERSION } from "./mcp.js";
 import { ALL_SCOPES, OAuthError, type OAuthService, type Scope, type TokenInfo } from "./oauth.js";
 import { consentPage, errorPage, PAGE_HEADERS } from "./pages.js";
@@ -12,8 +13,12 @@ export interface AppOptions {
   publicUrl: string;
   store: BrainStore;
   oauth: OAuthService;
+  /** MCP events (webhook subscriptions). Omit to leave the extension off. */
+  events?: EventService;
   /** Called before each request, for example to finish one-time setup. */
   ready?: () => Promise<void>;
+  /** Called after each MCP request that may have changed a brain, so pending events can be delivered. */
+  afterMcpRequest?: () => void;
 }
 
 const MAX_MCP_BODY_BYTES = 2 * 1024 * 1024;
@@ -231,7 +236,7 @@ export function createApp(opts: AppOptions): Hono {
     if (auth instanceof Response) return auth;
     const length = Number(c.req.header("content-length") ?? 0);
     if (length > MAX_MCP_BODY_BYTES) return c.json({ error: "payload_too_large" }, 413);
-    const server = createMcpServer(store, auth);
+    const server = createMcpServer(store, auth, opts.events);
     // Stateless: a fresh transport per request, with plain JSON responses.
     const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
     await server.connect(transport);
@@ -242,10 +247,11 @@ export function createApp(opts: AppOptions): Hono {
     } finally {
       // Responses are complete JSON bodies, so the server can be released immediately.
       void server.close();
+      opts.afterMcpRequest?.();
     }
   });
 
-  // Server-initiated streams and sessions arrive with change notifications in Phase 2.
+  // No server-initiated streams: events go out as webhooks (ChatGPT) or through the local channel (Claude Code).
   const notAllowed = (c: Context) => c.json({ error: "method_not_allowed" }, 405, { allow: "POST" });
   app.get("/mcp", notAllowed);
   app.delete("/mcp", notAllowed);

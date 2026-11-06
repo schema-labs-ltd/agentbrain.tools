@@ -14,5 +14,5 @@
     "rootDir": "src",
     "noEmit": true
   },
-  "include": ["src/core", "src/node"]
+  "include": ["src/core", "src/node", "src/channel"]
 }

@@ -126,7 +126,7 @@ export function isMetadataDocumentClientId(clientId: string): boolean {
   return clientId.startsWith("https://");
 }
 
-function privateHost(host: string): boolean {
+export function privateHost(host: string): boolean {
   const h = host.replace(/^\[|\]$/g, "").toLowerCase();
   if (h === "localhost" || h.endsWith(".localhost") || h.endsWith(".local") || h.endsWith(".internal")) return true;
   if (/^\d+\.\d+\.\d+\.\d+$/.test(h)) {

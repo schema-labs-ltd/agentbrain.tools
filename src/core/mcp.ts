@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { sha256Hex } from "./crypto.js";
+import type { EventService } from "./events.js";
 import { BrainError } from "./errors.js";
 import type { Scope, TokenInfo } from "./oauth.js";
 import type { Actor, BrainStore } from "./store.js";
@@ -43,9 +44,10 @@ function requireScope(auth: TokenInfo, scope: Scope): void {
 }
 
 /** Build an MCP server bound to one authenticated request. */
-export function createMcpServer(store: BrainStore, auth: TokenInfo): McpServer {
+export function createMcpServer(store: BrainStore, auth: TokenInfo, events?: EventService): McpServer {
   const server = new McpServer({ name: "agent-brain", version: SERVER_VERSION }, { instructions: SERVER_INSTRUCTIONS });
   const actor: Actor = { userId: auth.userId, clientId: auth.clientId, clientName: auth.clientName };
+  if (events) registerEvents(server, auth, events);
 
   const run =
     <A>(scope: Scope, fn: (args: A) => unknown | Promise<unknown>) =>
@@ -295,4 +297,27 @@ export function createMcpServer(store: BrainStore, auth: TokenInfo): McpServer {
   );
 
   return server;
+}
+
+const paramsSchema = z.record(z.string(), z.unknown()).optional();
+
+/**
+ * The MCP events extension (events/list, events/subscribe, events/unsubscribe)
+ * with webhook delivery, which ChatGPT uses to start tasks when something changes.
+ */
+function registerEvents(server: McpServer, auth: TokenInfo, events: EventService): void {
+  // "events" is an extension capability that the SDK's types do not know yet.
+  server.server.registerCapabilities({ events: {} } as Record<string, unknown>);
+  const principal = { userId: auth.userId, clientId: auth.clientId, canRead: auth.scopes.includes("brain:read") };
+  server.server.setRequestHandler(z.object({ method: z.literal("events/list"), params: paramsSchema }), async (req) =>
+    events.list(req.params?.cursor),
+  );
+  server.server.setRequestHandler(z.object({ method: z.literal("events/subscribe"), params: paramsSchema }), async (req) => {
+    const result = await events.subscribe(principal, req.params ?? {});
+    void events.deliver().catch((e) => console.error("event delivery failed", e));
+    return result;
+  });
+  server.server.setRequestHandler(z.object({ method: z.literal("events/unsubscribe"), params: paramsSchema }), async (req) =>
+    events.unsubscribe(principal, req.params ?? {}),
+  );
 }

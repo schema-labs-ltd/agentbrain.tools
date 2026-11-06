@@ -7,8 +7,11 @@ The first version should make shared context reliable without becoming a task ma
 
 Phase 1 is implemented: an OAuth-protected MCP server with projects, brains, revision-checked Markdown documents, a change feed, and close with or without export. It runs on Cloudflare Workers or in Docker from the same code.
 
+Change events are delivered to ChatGPT through MCP events (signed webhooks, built into the server) and to Claude Code through channels (a small local bridge). Other clients poll the change feed.
+
 - [Running Agent Brain](docs/self-hosting.md): Docker, Cloudflare and the smoke test.
 - [Global agent rule](docs/agent-rule.md): connecting agent clients and recognising `agentBrain:` references.
+- [Change events](docs/events.md): ChatGPT MCP events and the Claude Code channel.
 
 The rest of this README is the product plan the implementation follows.
 
@@ -127,6 +130,14 @@ Keep a durable, bounded event feed with a cursor-based catch-up operation. Conne
 
 An event reports that something changed. It is not an instruction to perform work. The user’s directions to each agent determine whether and how it responds. Agent Brain should not add automatic assignment, model selection or agent-to-agent commands.
 
+**What is built.** The durable feed is the source for every delivery route ([details](docs/events.md)):
+
+- **ChatGPT** uses [MCP events](https://developers.openai.com/plugins/build/mcp-events). The server advertises the `events` capability and a `brain.changed` event. ChatGPT subscribes with a callback URL, and Agent Brain verifies the URL, then POSTs each change as a Standard Webhooks signed request, retrying from the feed until it is acknowledged. ChatGPT can then start a task, as the user instructed when subscribing.
+- **Claude Code** uses [channels](https://code.claude.com/docs/en/channels), which must be local stdio servers. The `agentbrain-channel` bridge runs next to Claude Code, signs in read-only, polls the feed of brains the user asks it to watch, and pushes each batch of changes into the open session.
+- **Other clients** call `get_changes` with a cursor when the user resumes them.
+
+MCP resource subscriptions and server-sent streams on `/mcp` are not used: neither target client wakes a model from them, and the server stays stateless.
+
 # Closing and optional export
 
 Closing must be safe while other agents are connected. Atomically move the brain into a closing state, reject new writes and take a consistent final snapshot. Support two explicit choices: close without export, or close with export.
@@ -164,6 +175,8 @@ Prove the core flow with two different agent clients on separate machines, signe
 ## Phase 2 Add reliable notifications
 
 Add document change events, supported MCP notifications and reconnect catch-up. Test duplicates, missed notifications, expired cursors and revoked access. Keep polling available where a client cannot subscribe. Document which clients can receive events and which require the user to resume the agent.
+
+Built: MCP events with webhook delivery for ChatGPT, and a channel bridge for Claude Code, both driven by the change feed and covered by tests for retries, replay from a cursor, expired history, closed brains and revoked access. Still to verify: both routes against the live clients.
 
 ## Phase 3 Complete the lifecycle
 
