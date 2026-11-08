@@ -156,7 +156,8 @@ describe("website", () => {
     const { brain, docId } = await seed(t);
     const cookie = await session(t);
     const doc = `${BASE}${pathOf(brain.reference)}/documents/${docId}`;
-    // A key that merely contains "revision" after a separator must not be mistaken for it.
+    // General query-parsing guard: an encoded key containing "revision" is a different key, and
+    // an unrelated encoded key must not stop the real one from being read.
     const decoy = await (await t.fetch(`${doc}?x%26revision=1`, { headers: { cookie } })).text();
     expect(decoy).not.toContain("You are viewing an older revision");
     const encoded = await (await t.fetch(`${doc}?a%3Db=c&revision=1`, { headers: { cookie } })).text();
