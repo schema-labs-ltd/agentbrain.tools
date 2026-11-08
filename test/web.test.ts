@@ -151,6 +151,19 @@ describe("website", () => {
     expect(html).toContain('href="https://example.com"');
   });
 
+  it("reads the revision query parameter alongside encoded and repeated keys", async () => {
+    const t = testInstance();
+    const { brain, docId } = await seed(t);
+    const cookie = await session(t);
+    const doc = `${BASE}${pathOf(brain.reference)}/documents/${docId}`;
+    // General query-parsing guard: an encoded key containing "revision" is a different key, and
+    // an unrelated encoded key must not stop the real one from being read.
+    const decoy = await (await t.fetch(`${doc}?x%26revision=1`, { headers: { cookie } })).text();
+    expect(decoy).not.toContain("You are viewing an older revision");
+    const encoded = await (await t.fetch(`${doc}?a%3Db=c&revision=1`, { headers: { cookie } })).text();
+    expect(encoded).toContain("You are viewing an older revision");
+  });
+
   it("shows closed brains without content and hides other users' data", async () => {
     const t = testInstance();
     const { actor, brain, docId } = await seed(t);
@@ -175,6 +188,13 @@ describe("website", () => {
     expect(blocked.status).toBe(403);
     const out = await t.fetch(`${BASE}/logout`, { method: "POST", headers: { cookie, origin: BASE }, redirect: "manual" });
     expect(out.status).toBe(303);
+    // Hono validates __Host- cookie rules on delete as well as set; the clearing cookie must still be emitted.
+    const cleared = out.headers.get("set-cookie")!;
+    expect(cleared).toMatch(/^__Host-agentbrain_session=;/);
+    expect(cleared).toMatch(/Max-Age=0/i);
+    expect(cleared).toMatch(/Path=\//);
+    expect(cleared).toMatch(/Secure/i);
+    expect(cleared).not.toMatch(/Domain=/i);
     const after = await t.fetch(`${BASE}/projects/x`, { headers: { cookie }, redirect: "manual" });
     expect(after.status).toBe(303);
   });
