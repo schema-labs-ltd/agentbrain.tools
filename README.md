@@ -9,6 +9,8 @@ Phase 1 is implemented: an OAuth-protected MCP server with projects, brains, rev
 
 A read-only website lets the owner browse every project, task and document from a desktop or phone, with sanitised Markdown rendering. Sign in at the server's address (for example https://agentbrain.tools) with the same email and password used on the OAuth consent screen.
 
+Brains can also hold images (PNG, JPEG, GIF, WebP) so agents can pass on screenshots, mock-ups and diagrams. Agents upload them with a one-time upload link, an https URL or inline base64, see them in the index, fetch them as image content with `read_image`, and refer to them from documents as `![alt](image:<id>)`. See [Images](docs/best-practices.md#12-images).
+
 Change events are delivered to ChatGPT through MCP events (signed webhooks, built into the server) and to Claude Code through channels (a small local bridge). Other clients poll the change feed.
 
 - [Running Agent Brain](docs/self-hosting.md): Docker, Cloudflare and the smoke test.
@@ -90,7 +92,7 @@ Limits are enforced in two stages:
 
 - **Hard limit:** a write that would exceed it is rejected without changing anything. The error states the limit, the current size and the size the write would have produced, so the agent can consolidate and retry.
 
-Initial defaults, configurable per deployment: 64 KB per document, 50 documents and 1 MB in total per brain, and the last 50 revisions of each document kept while the brain is active.
+Initial defaults, configurable per deployment: 64 KB per document, 50 documents and 1 MB in total per brain, and the last 50 revisions of each document kept while the brain is active. Images have their own budget: 5 MB per image, 20 images and 25 MB in total per brain.
 
 # Proposed access model
 

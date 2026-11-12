@@ -1,10 +1,12 @@
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { Hono, type Context } from "hono";
-import { verifyPassword } from "./crypto.js";
+import { sha256Hex, verifyPassword } from "./crypto.js";
+import { BrainError } from "./errors.js";
+import { extensionFor, imageHeaders } from "./images.js";
 import { SUPPORTED_SIGNING_ALGS } from "./jwt.js";
 import type { EventService } from "./events.js";
-import { createMcpServer, SERVER_VERSION } from "./mcp.js";
-import { ALL_SCOPES, OAuthError, type OAuthService, type Scope, type TokenInfo } from "./oauth.js";
+import { createMcpServer, readLimited, SERVER_VERSION } from "./mcp.js";
+import { ALL_SCOPES, OAuthError, type FetchFn, type OAuthService, type Scope, type TokenInfo } from "./oauth.js";
 import { consentPage, errorPage, PAGE_HEADERS } from "./pages.js";
 import type { BrainStore } from "./store.js";
 import { registerWebsite } from "./web.js";
@@ -23,9 +25,13 @@ export interface AppOptions {
   afterMcpRequest?: () => void;
   /** Browser sessions for the read-only website. Omit to serve only the MCP server and OAuth pages. */
   sessions?: WebSessionService;
+  /** Outbound fetch, for images uploaded from a source URL. */
+  fetch?: FetchFn;
 }
 
-const MAX_MCP_BODY_BYTES = 2 * 1024 * 1024;
+/** Large enough for an inline base64 image at the default 5 MiB limit, plus JSON overhead. */
+const MAX_MCP_BODY_BYTES = 8 * 1024 * 1024;
+
 
 export function createApp(opts: AppOptions): Hono {
   const base = opts.publicUrl.replace(/\/+$/, "");
@@ -244,7 +250,7 @@ export function createApp(opts: AppOptions): Hono {
     if (auth instanceof Response) return auth;
     const length = Number(c.req.header("content-length") ?? 0);
     if (length > MAX_MCP_BODY_BYTES) return c.json({ error: "payload_too_large" }, 413);
-    const server = createMcpServer(store, auth, opts.events);
+    const server = createMcpServer(store, auth, opts.events, { base, fetch: opts.fetch });
     // Stateless: a fresh transport per request, with plain JSON responses.
     const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
     await server.connect(transport);
@@ -256,6 +262,49 @@ export function createApp(opts: AppOptions): Hono {
       // Responses are complete JSON bodies, so the server can be released immediately.
       void server.close();
       opts.afterMcpRequest?.();
+    }
+  });
+
+  // ------------------------------------------------------------------ image links
+
+  const linkError = (e: unknown) => {
+    if (e instanceof BrainError) {
+      const status = e.code === "not_found" ? 404 : e.code === "limit_exceeded" ? 413 : e.code === "brain_closed" ? 410 : 400;
+      return new Response(JSON.stringify(e.toJSON()), { status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
+    }
+    throw e;
+  };
+
+  // One-time upload links from create_image_upload. The unguessable token is the credential.
+  const upload = async (c: Context) => {
+    try {
+      const hash = await sha256Hex(c.req.param("token")!);
+      const length = Number(c.req.header("content-length") ?? 0);
+      if (length > store.limits.imageBytes) {
+        throw new BrainError("limit_exceeded", "The image exceeds the per-image size limit. Resize or compress it, then retry.", {
+          limit: "imageBytes",
+          maximum: store.limits.imageBytes,
+          attempted: length,
+        });
+      }
+      const data = await readLimited(c.req.raw, store.limits.imageBytes);
+      const result = store.uploadWithLink(hash, data);
+      opts.afterMcpRequest?.();
+      return c.json(result, 201, { "cache-control": "no-store" });
+    } catch (e) {
+      return linkError(e);
+    }
+  };
+  app.put("/images/upload/:token", upload);
+  app.post("/images/upload/:token", upload);
+
+  // Short-lived download links from read_image with as: "url".
+  app.get("/images/download/:token", async (c) => {
+    try {
+      const { image, data } = store.downloadWithLink(await sha256Hex(c.req.param("token")!));
+      return new Response(data as Uint8Array<ArrayBuffer>, { headers: imageHeaders(image.mimeType, `${image.title}.${extensionFor(image.mimeType)}`) });
+    } catch (e) {
+      return linkError(e);
     }
   });
 

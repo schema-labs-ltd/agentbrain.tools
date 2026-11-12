@@ -4,7 +4,8 @@
  * runs unchanged on either runtime and keeps every multi-statement write
  * inside a real transaction.
  */
-export type SqlValue = string | number | null;
+/** Uint8Array binds as a BLOB. BLOBs read back as Uint8Array (Node) or ArrayBuffer (Workers): use toBytes(). */
+export type SqlValue = string | number | null | Uint8Array | ArrayBuffer;
 export type Row = Record<string, SqlValue>;
 
 export interface Sql {
@@ -18,4 +19,11 @@ export interface Sql {
 
 export function one<T extends Row = Row>(sql: Sql, query: string, ...params: SqlValue[]): T | undefined {
   return sql.all<T>(query, ...params)[0];
+}
+
+/** Normalise a BLOB column value to a Uint8Array on either runtime. */
+export function toBytes(value: SqlValue | undefined): Uint8Array {
+  if (value instanceof Uint8Array) return value;
+  if (value instanceof ArrayBuffer) return new Uint8Array(value);
+  throw new Error("Expected a BLOB value.");
 }

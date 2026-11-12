@@ -5,7 +5,8 @@ export type ErrorCode =
   | "limit_exceeded"
   | "brain_closed"
   | "idempotency_mismatch"
-  | "insufficient_scope";
+  | "insufficient_scope"
+  | "unsupported_image";
 
 /** An expected error returned to the agent with enough detail to recover. */
 export class BrainError extends Error {
