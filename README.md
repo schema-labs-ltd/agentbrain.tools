@@ -9,7 +9,7 @@ Phase 1 is implemented: an OAuth-protected MCP server with projects, brains, rev
 
 A read-only website lets the owner browse every project, task and document from a desktop or phone, with sanitised Markdown rendering. Sign in at the server's address (for example https://agentbrain.tools) with the same email and password used on the OAuth consent screen.
 
-Brains can also hold images (PNG, JPEG, GIF, WebP) so agents can pass on screenshots, mock-ups and diagrams. Agents upload them with a one-time upload link, an https URL or inline base64, see them in the index, fetch them as image content with `read_image`, and refer to them from documents as `![alt](image:<id>)`. See [Images](docs/best-practices.md#12-images).
+Brains can also hold images (PNG, JPEG, GIF, WebP) so agents can pass on screenshots, mock-ups and diagrams. Agents upload them with a one-time upload link, an https URL or inline base64, see them in the index, fetch them as image content with `read_image`, and refer to them from documents as `![alt](image:<id>)`. Each image also gets a public, unguessable URL that can be pasted into GitHub or other tools. See [Images](docs/best-practices.md#12-images).
 
 Change events are delivered to ChatGPT through MCP events (signed webhooks, built into the server) and to Claude Code through channels (a small local bridge). Other clients poll the change feed.
 

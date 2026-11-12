@@ -211,6 +211,12 @@ const MIGRATIONS: string[][] = [
     )`,
     `CREATE INDEX image_links_brain ON image_links (brain_id)`,
   ],
+  [
+    // A public, unguessable link token per image, unrelated to any other identifier.
+    `ALTER TABLE images ADD COLUMN public_token TEXT`,
+    `UPDATE images SET public_token = lower(hex(randomblob(16))) WHERE public_token IS NULL`,
+    `CREATE UNIQUE INDEX images_public_token ON images (public_token)`,
+  ],
 ];
 
 export function migrate(sql: Sql): void {

@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "agentbrain",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Shared Markdown context for one task that several agents can read and update, through the Agent Brain MCP server, with a skill that teaches agents how to use it well.",
   "author": { "name": "Schema Labs", "url": "https://agentbrain.tools" },
   "homepage": "https://agentbrain.tools",

@@ -253,6 +253,59 @@ describe("images over MCP and HTTP", () => {
   });
 });
 
+describe("public image links", () => {
+  it("serves each image at its own unguessable public URL until it is deleted", async () => {
+    const t = testInstance();
+    const { access_token } = await signIn(t.fetch, "Agent A");
+    const { call } = await connect(t.fetch, access_token);
+    const ref = (await call("create_brain", { project: "Images" })).body.reference as string;
+    const up = await call("upload_image", { reference: ref, title: "Pixel", data_base64: bytesToBase64(PNG_1X1) });
+    const image = up.body.image as { id: string; url: string; revision: number };
+    expect(image.url).toMatch(new RegExp(`^${BASE}/i/[0-9a-z]{26}\\.png$`));
+    const [project, brain] = ref.slice("agentBrain:".length).split(".");
+    for (const id of [project!, brain!, image.id]) expect(image.url).not.toContain(id);
+
+    // No cookie, no token: anyone with the link can view it.
+    const res = await t.fetch(image.url);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("image/png");
+    expect(res.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(res.headers.get("cache-control")).toBe("public, max-age=3600");
+    expect(res.headers.get("x-robots-tag")).toBe("noindex");
+    expect(new Uint8Array(await res.arrayBuffer())).toEqual(PNG_1X1);
+
+    // The same URL is reported everywhere the agent sees the image.
+    expect((await call("read_index", { reference: ref })).body.images[0].url).toBe(image.url);
+    const link = await call("create_image_upload", { reference: ref, title: "Second" });
+    const put = (await (await t.fetch(link.body.uploadUrl, { method: "PUT", body: PNG_1X1 })).json()) as { image: { url: string } };
+    expect(put.image.url).toMatch(/\/i\/[0-9a-z]{26}\.png$/);
+    expect(put.image.url).not.toBe(image.url);
+
+    expect((await t.fetch(`${BASE}/i/0000000000000000000000000a.png`)).status).toBe(404);
+    expect((await t.fetch(`${BASE}/i/not-a-token`)).status).toBe(404);
+    await call("delete_image", { reference: ref, image_id: image.id, base_revision: image.revision });
+    expect((await t.fetch(image.url)).status).toBe(404);
+    await call("close_brain", { reference: ref, export: false });
+    expect((await t.fetch(put.image.url)).status).toBe(404);
+  });
+
+  it("gives images stored before the migration a public link", () => {
+    const sql = openSqlite(":memory:");
+    migrate(sql);
+    const store = new BrainStore(sql, DEFAULT_LIMITS, Date.now, "https://brain.test");
+    const user = store.upsertUser("a@example.com", "x");
+    const actor: Actor = { userId: user, clientId: "c" };
+    const ref = store.createBrain(actor, { project: "P" }).reference;
+    const id = (store.createImage(actor, ref, { title: "Old", data: PNG_1X1 }).image as { id: string }).id;
+    // Simulate a row from before the column existed, then re-run the backfill statement.
+    sql.run(`UPDATE images SET public_token = NULL`);
+    sql.run(`UPDATE images SET public_token = lower(hex(randomblob(16))) WHERE public_token IS NULL`);
+    const url = store.getIndex(user, ref).images.find((i) => i.id === id)!.url;
+    expect(url).toMatch(/^https:\/\/brain\.test\/i\/[0-9a-f]{32}\.png$/);
+    expect(store.publicImage(url.split("/i/")[1]!.replace(".png", "")).data).toEqual(PNG_1X1);
+  });
+});
+
 describe("markdown image references", () => {
   it("renders image:<id> from the brain and nothing without a base", () => {
     const html = renderMarkdown("![diagram](image:0123456789abcdef)", { imageBase: "/brains/p/b/images" });

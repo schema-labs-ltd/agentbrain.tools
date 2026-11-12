@@ -18,7 +18,7 @@ Before your first write in a conversation, call read_guide once for the full pra
 
 Create a brain only for work that must outlive one conversation or be shared with another agent, and check list_brains for an existing one for the same task first. Write what another agent could not cheaply rediscover: purpose, current state, decisions with reasons, findings with sources, dead ends, open questions and pointers to files, URLs, commits and issues. Never write secrets, raw logs or pasted files, copies of code or tickets, task assignments or instructions to other agents.
 
-Images (PNG, JPEG, GIF, WebP) can be shared too when a picture carries what text cannot: upload_image with base64 or an https source_url, or create_image_upload for a one-time upload URL when you have a shell and a file. read_index lists images; read_image returns one as image content you can look at. Give every image a description of what it shows and why it matters, and reference it from documents as ![alt](image:<id>).
+Images (PNG, JPEG, GIF, WebP) can be shared too when a picture carries what text cannot: upload_image with base64 or an https source_url, or create_image_upload for a one-time upload URL when you have a shell and a file. read_index lists images; read_image returns one as image content you can look at. Every image has a public url for linking from GitHub or other tools; anyone with it can view the image, so never upload anything secret or personal. Give every image a description of what it shows and why it matters, and reference it from brain documents as ![alt](image:<id>).
 
 Keep the brain compact: update the Overview, Decisions, Findings and Handover documents before creating new ones. Create a document only for a distinct subject another agent would read on its own, with a stable noun-phrase title and a one-line description; never per-session, per-agent or "part 2" documents. Aim for documents under about 16 KB. When a write returns warnings, consolidate (merge duplicates, replace superseded decisions, keep evidence for anything disputed) before writing more. Use patch_document for small edits and replace_document for restructuring, with a one-line change_summary. Write the current state, not a diary, and rewrite the Handover at the end of each working session.
 
@@ -404,7 +404,7 @@ export function createMcpServer(store: BrainStore, auth: TokenInfo, events?: Eve
     {
       title: "Upload image",
       description:
-        "Add a PNG, JPEG, GIF or WebP image to a brain, for a screenshot, diagram, mock-up or chart that carries something text cannot. Pass exactly one of data_base64 (the file's bytes as base64, fine for small images) or source_url (a public https URL the server downloads, for example a file link your app gave you). For a file on disk, prefer create_image_upload so the bytes do not pass through the conversation. Returns the image ID; reference it in documents as ![alt](image:<id>).",
+        "Add a PNG, JPEG, GIF or WebP image to a brain, for a screenshot, diagram, mock-up or chart that carries something text cannot. Pass exactly one of data_base64 (the file's bytes as base64, fine for small images) or source_url (a public https URL the server downloads, for example a file link your app gave you). For a file on disk, prefer create_image_upload so the bytes do not pass through the conversation. Returns the image ID and a public url. Reference it in brain documents as ![alt](image:<id>); use the url to show it in GitHub or other tools. Anyone with the url can view the image until it is deleted or the brain closed, so never upload anything secret or personal.",
       inputSchema: {
         reference,
         title: imageTitle,
@@ -438,7 +438,7 @@ export function createMcpServer(store: BrainStore, auth: TokenInfo, events?: Eve
     {
       title: "Create image upload link",
       description:
-        "Get a one-time URL for uploading an image file from a shell, so large files never pass through the conversation. Send the raw file with an HTTP PUT within 15 minutes, for example: curl --fail --upload-file diagram.png '<upload_url>'. The response to the PUT is the new image's ID and details. The link is spent once an image is stored; a rejected file can be fixed and sent again.",
+        "Get a one-time URL for uploading an image file from a shell, so large files never pass through the conversation. Send the raw file with an HTTP PUT within 15 minutes, for example: curl --fail --upload-file diagram.png '<upload_url>'. The response to the PUT is the new image's ID, details and public url. The link is spent once an image is stored; a rejected file can be fixed and sent again.",
       inputSchema: { reference, title: imageTitle, description: imageDescription },
     },
     run("brain:write", async (args: { reference: string; title: string; description?: string }) => {

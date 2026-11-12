@@ -308,6 +308,24 @@ export function createApp(opts: AppOptions): Hono {
     }
   });
 
+  // Public image links: anyone with the unguessable URL can view the image, until it is deleted or its brain closed.
+  app.get("/i/:file", (c) => {
+    try {
+      const token = c.req.param("file")!.replace(/\.[a-z0-9]{1,5}$/i, "");
+      const { image, data } = store.publicImage(token);
+      return new Response(data as Uint8Array<ArrayBuffer>, {
+        headers: {
+          ...imageHeaders(image.mimeType, `${image.title}.${extensionFor(image.mimeType)}`),
+          "cache-control": "public, max-age=3600",
+          "cross-origin-resource-policy": "cross-origin",
+          "x-robots-tag": "noindex",
+        },
+      });
+    } catch (e) {
+      return linkError(e);
+    }
+  });
+
   // No server-initiated streams: events go out as webhooks (ChatGPT) or through the local channel (Claude Code).
   const notAllowed = (c: Context) => c.json({ error: "method_not_allowed" }, 405, { allow: "POST" });
   app.get("/mcp", notAllowed);

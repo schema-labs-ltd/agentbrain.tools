@@ -73,7 +73,7 @@ export function createInstance(
   if (!config.PUBLIC_URL) throw new Error("PUBLIC_URL must be set to the server's public base URL.");
   migrate(sql);
   const now = deps.now ?? Date.now;
-  const store = new BrainStore(sql, limitsFrom(config), now);
+  const store = new BrainStore(sql, limitsFrom(config), now, config.PUBLIC_URL.replace(/\/+$/, ""));
   const oauth = new OAuthService(sql, now, deps.fetch);
   const events = new EventService(sql, store, deps.fetch, now, deps.events);
   let setup: Promise<void> | undefined;

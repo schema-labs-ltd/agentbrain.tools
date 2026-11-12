@@ -1,6 +1,6 @@
 import { BrainError } from "./errors.js";
 import { formatReference, newDocumentId, newOpaqueId, parseReference, type ParsedReference } from "./ids.js";
-import { detectImage, IMAGE_TYPES } from "./images.js";
+import { detectImage, extensionFor, IMAGE_TYPES } from "./images.js";
 import { one, toBytes, type Sql, type SqlValue } from "./sql.js";
 
 export interface Limits {
@@ -66,6 +66,8 @@ export interface BrainSummary {
 
 export interface ImageSummary {
   id: string;
+  /** Public link to the image file. Anyone with it can view the image until it is deleted or the brain closed. */
+  url: string;
   title: string;
   description: string;
   mimeType: string;
@@ -141,6 +143,7 @@ type ImageRow = {
   description: string;
   mime_type: string;
   bytes: number;
+  public_token: string;
   width: number | null;
   height: number | null;
   revision: number;
@@ -169,6 +172,8 @@ export class BrainStore {
     private readonly sql: Sql,
     readonly limits: Limits = DEFAULT_LIMITS,
     private readonly now: () => number = Date.now,
+    /** Public base URL for image links, for example https://agentbrain.tools. Empty gives site-relative links. */
+    private readonly publicBase: string = "",
   ) {}
 
   // ---------------------------------------------------------------- users
@@ -521,7 +526,7 @@ export class BrainStore {
     const brain = this.loadActiveBrain(userId, reference);
     const row = this.findImage(brain.id, id);
     if (!row) throw new BrainError("not_found", `Image ${id} does not exist in this brain (it may have been deleted).`);
-    return { image: { ...imageSummary(row), updatedBy: parseActor(row.updated_by) }, data: this.imageBytes(brain.id, row) };
+    return { image: { ...this.imageSummary(row), updatedBy: parseActor(row.updated_by) }, data: this.imageBytes(brain.id, row) };
   }
 
   /** Change an image's title or description. The image itself never changes. Revision-checked. */
@@ -632,7 +637,7 @@ export class BrainStore {
         row.id,
         expires,
       );
-      return { expiresAt: iso(expires), image: imageSummary(row) };
+      return { expiresAt: iso(expires), image: this.imageSummary(row) };
     });
   }
 
@@ -642,13 +647,30 @@ export class BrainStore {
     const brain = this.loadBrain(link.user_id, { brainId: link.brain_id });
     const row = brain.status === "active" && link.image_id ? this.findImage(brain.id, link.image_id) : undefined;
     if (!row) throw new BrainError("not_found", "This link has expired or the image no longer exists.");
-    return { image: imageSummary(row), data: this.imageBytes(brain.id, row) };
+    return { image: this.imageSummary(row), data: this.imageBytes(brain.id, row) };
   }
 
   /** Read an image by ID for the website, which authenticates the owner itself. */
   imageForWebsite(userId: string, reference: string, id: string): { image: ImageSummary; data: Uint8Array } {
     const { image, data } = this.readImage(userId, reference, id);
     return { image, data };
+  }
+
+  /**
+   * Read an image by its public token, with no sign-in. Only live images in
+   * active brains are served; anything else is indistinguishable from missing.
+   */
+  publicImage(token: string): { image: ImageSummary; data: Uint8Array } {
+    const t = token.trim().toLowerCase();
+    const row = /^[0-9a-z]{20,64}$/.test(t)
+      ? one<ImageRow & { status: string }>(
+          this.sql,
+          `SELECT i.*, b.status FROM images i JOIN brains b ON b.id = i.brain_id WHERE i.public_token = ? AND i.deleted = 0`,
+          t,
+        )
+      : undefined;
+    if (!row || row.status !== "active") throw new BrainError("not_found", "No image is available at this address.");
+    return { image: this.imageSummary(row), data: this.imageBytes(row.brain_id, row) };
   }
 
   // ---------------------------------------------------------------- changes
@@ -752,7 +774,7 @@ export class BrainStore {
       exportedAt: iso(this.now()),
       finalCursor: String(brain.last_seq),
       documents: docs.map((d) => ({ ...docSummary(d), markdown: d.body })),
-      images: this.liveImages(brain.id).map(imageSummary),
+      images: this.liveImages(brain.id).map((r) => this.imageSummary(r)),
     };
   }
 
@@ -1063,6 +1085,10 @@ export class BrainStore {
     return seq;
   }
 
+  private imageSummary(r: ImageRow): ImageSummary {
+    return toImageSummary(r, `${this.publicBase}/i/${r.public_token}.${extensionFor(r.mime_type)}`);
+  }
+
   private insertImage(actor: Actor, brain: BrainRow, input: { title: string; description?: string; data: Uint8Array }): ImageWriteResult {
     const title = requireText(input.title, "title", 200);
     const description = (input.description ?? "").trim().slice(0, 1000);
@@ -1085,14 +1111,15 @@ export class BrainStore {
     const id = newDocumentId();
     const now = this.now();
     this.sql.run(
-      `INSERT INTO images (brain_id, id, title, description, mime_type, bytes, width, height, revision, deleted, created_at, updated_at, updated_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?, ?)`,
+      `INSERT INTO images (brain_id, id, title, description, mime_type, bytes, public_token, width, height, revision, deleted, created_at, updated_at, updated_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?, ?)`,
       brain.id,
       id,
       title,
       description,
       info.mimeType,
       data.length,
+      newOpaqueId(),
       info.width,
       info.height,
       now,
@@ -1115,7 +1142,7 @@ export class BrainStore {
     const row = this.findImage(brain.id, id)!;
     const seq = this.appendEvent(brain.id, type, id, row.revision, actor);
     this.touch(brain.id);
-    return { image: imageSummary(row), cursor: String(seq), warnings: this.imageWarnings(brain.id) };
+    return { image: this.imageSummary(row), cursor: String(seq), warnings: this.imageWarnings(brain.id) };
   }
 
   private liveImages(brainId: string): ImageRow[] {
@@ -1147,7 +1174,7 @@ export class BrainStore {
       throw new BrainError(
         "conflict",
         `Image ${id} has changed since revision ${baseRevision}. Check the current details below, reapply your change and retry with baseRevision ${row.revision}.`,
-        { current: { ...imageSummary(row), updatedBy: parseActor(row.updated_by) } },
+        { current: { ...this.imageSummary(row), updatedBy: parseActor(row.updated_by) } },
       );
     }
     return row;
@@ -1237,7 +1264,7 @@ export class BrainStore {
       ...this.summary(row),
       cursor: String(row.last_seq),
       documents: docs.map(docSummary),
-      images: this.liveImages(row.id).map(imageSummary),
+      images: this.liveImages(row.id).map((r) => this.imageSummary(r)),
       usage: {
         ...usage,
         images: images.images,
@@ -1336,9 +1363,10 @@ function subjectOf(type: string, id: string | null): { documentId: string | null
   return type.startsWith("image.") ? { documentId: null, imageId: id } : { documentId: id, imageId: null };
 }
 
-function imageSummary(r: ImageRow): ImageSummary {
+function toImageSummary(r: ImageRow, url: string): ImageSummary {
   return {
     id: r.id,
+    url,
     title: r.title,
     description: r.description,
     mimeType: r.mime_type,
