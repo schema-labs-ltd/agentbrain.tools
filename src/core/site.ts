@@ -1,5 +1,5 @@
 import { escapeHtml as esc } from "./markdown.js";
-import type { ActivityItem, BrainIndex, BrainListing, BrainSummary, DocumentSummary, ProjectOverview } from "./store.js";
+import type { ActivityItem, BrainIndex, BrainListing, BrainSummary, DocumentSummary, ImageSummary, ProjectOverview } from "./store.js";
 
 /** HTML for the read-only website. No JavaScript: everything is server-rendered. */
 
@@ -11,7 +11,7 @@ export const SITE_HEADERS = {
   // same-origin, not no-referrer: with no-referrer browsers send "Origin: null" on form posts, which the CSRF check rejects.
   "referrer-policy": "same-origin",
   "content-security-policy":
-    "default-src 'none'; style-src 'unsafe-inline'; img-src https: data:; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
+    "default-src 'none'; style-src 'unsafe-inline'; img-src 'self' https: data:; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
 };
 
 const STYLE = `
@@ -65,6 +65,14 @@ details.source pre { margin:0; border-radius:0 0 12px 12px; border:0; border-top
 .card input { width:100%; padding:10px 12px; border:1px solid var(--line); border-radius:8px; background:transparent; color:inherit; font:inherit; font-size:16px; }
 .card .btn { width:100%; margin-top:20px; }
 .error { color:var(--err); margin:8px 0 0; }
+.gallery { list-style:none; margin:0; padding:0; display:grid; gap:10px; grid-template-columns:repeat(auto-fill, minmax(200px, 1fr)); }
+.gallery .item > a { padding:0; height:100%; }
+.gallery .thumb { display:block; width:100%; aspect-ratio:4/3; object-fit:contain; background:var(--soft); border-radius:12px 12px 0 0; border-bottom:1px solid var(--line); }
+.gallery .cap { padding:10px 12px; }
+.gallery .desc { display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; font-size:14px; }
+.figure { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:12px; margin:0 0 16px; text-align:center; }
+.figure img { max-width:100%; height:auto; border-radius:6px; background:var(--soft); }
+.md a.brain-image { display:inline-block; }
 
 /* Rendered Markdown */
 .md { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:20px; font-size:16px; }
@@ -232,7 +240,18 @@ const EVENT_LABELS: Record<string, string> = {
   "document.updated": "Updated",
   "document.renamed": "Renamed",
   "document.deleted": "Deleted a document",
+  "image.created": "Added image",
+  "image.updated": "Updated image details",
+  "image.deleted": "Deleted an image",
 };
+
+function dimensions(i: ImageSummary): string {
+  return i.width && i.height ? `${i.width} × ${i.height}` : "";
+}
+
+function imageType(mimeType: string): string {
+  return mimeType.replace(/^image\//, "").toUpperCase();
+}
 
 export function closedBrainPage(user: SiteUser, brain: BrainSummary & { closedAt: string | null }): string {
   return page(
@@ -257,6 +276,16 @@ export function brainPage(user: SiteUser, brain: BrainIndex, activity: ActivityI
         )
         .join("")}</ul>`
     : `<p class="empty">No documents yet.</p>`;
+  const images = brain.images.length
+    ? `<ul class="gallery">${brain.images
+        .map((i) => {
+          const href = `${base}/images/${i.id}`;
+          return `<li class="item"><a href="${esc(href)}"><img class="thumb" src="${esc(`${href}/raw`)}" alt="${esc(i.description || i.title)}" loading="lazy"><div class="cap"><div class="name">${esc(i.title)}</div>${
+            i.description ? `<div class="desc">${esc(i.description)}</div>` : ""
+          }<div class="meta"><span>${esc(imageType(i.mimeType))}</span>${dimensions(i) ? `<span>${dimensions(i)}</span>` : ""}<span>${size(i.bytes)}</span></div></div></a></li>`;
+        })
+        .join("")}</ul>`
+    : "";
   const events = activity.length
     ? `<ul class="activity">${activity
         .map((e) => {
@@ -264,7 +293,9 @@ export function brainPage(user: SiteUser, brain: BrainIndex, activity: ActivityI
           const doc =
             e.documentId && e.documentTitle
               ? ` <a href="${esc(`${base}/documents/${e.documentId}`)}">${esc(e.documentTitle)}</a>${e.revision ? ` (revision ${e.revision})` : ""}`
-              : "";
+              : e.imageId && e.imageTitle
+                ? ` <a href="${esc(`${base}/images/${e.imageId}`)}">${esc(e.imageTitle)}</a>`
+                : "";
           return `<li><span>${esc(label)}${doc}</span><span class="who">${esc(e.clientName ?? "Unnamed client")}</span>${when(e.at)}</li>`;
         })
         .join("")}</ul>`
@@ -275,8 +306,11 @@ export function brainPage(user: SiteUser, brain: BrainIndex, activity: ActivityI
 <h1>${esc(brainTitle(brain))} <span class="pill active">active</span></h1>
 ${brain.description ? `<p class="lead">${esc(brain.description)}</p>` : ""}
 <code class="ref" title="Paste this reference into another agent's conversation">${esc(brain.reference)}</code>
-<div class="meta"><span>${plural(brain.usage.documents, "document")} of ${brain.usage.limits.brainDocuments}</span><span>${size(brain.usage.bytes)} of ${size(brain.usage.limits.brainBytes)}</span><span>Created ${when(brain.createdAt)}</span><span>Updated ${when(brain.updatedAt)}</span></div>
+<div class="meta"><span>${plural(brain.usage.documents, "document")} of ${brain.usage.limits.brainDocuments}</span><span>${size(brain.usage.bytes)} of ${size(brain.usage.limits.brainBytes)}</span>${
+      brain.usage.images ? `<span>${plural(brain.usage.images, "image")} (${size(brain.usage.imageBytes)})</span>` : ""
+    }<span>Created ${when(brain.createdAt)}</span><span>Updated ${when(brain.updatedAt)}</span></div>
 <h2 class="section">Documents</h2>${docs}
+${images ? `<h2 class="section">Images</h2>${images}` : ""}
 <h2 class="section">Recent activity</h2>${events}`,
     user,
   );
@@ -326,6 +360,25 @@ ${old ? `<p class="notice">You are viewing an older revision. <a href="${esc(bas
 <article class="md">${d.html || `<p class="lead">This document is empty.</p>`}</article>
 <details class="source"><summary>Markdown source</summary><pre>${esc(d.markdown)}</pre></details>
 <h2 class="section">History</h2>${history}`,
+    user,
+  );
+}
+
+export function imagePage(user: SiteUser, brain: BrainSummary, i: ImageSummary): string {
+  const raw = `${brainPath(brain.reference)}/images/${i.id}/raw`;
+  return page(
+    i.title,
+    `${crumbs([
+      { href: "/", label: "Projects" },
+      { href: `/projects/${brain.project.token}`, label: brain.project.name },
+      { href: brainPath(brain.reference), label: brainTitle(brain) },
+      { label: i.title },
+    ])}
+<h1>${esc(i.title)}</h1>
+${i.description ? `<p class="lead">${esc(i.description)}</p>` : ""}
+<div class="meta"><span>${esc(imageType(i.mimeType))}</span>${dimensions(i) ? `<span>${dimensions(i)}</span>` : ""}<span>${size(i.bytes)}</span><span>Revision ${i.revision}</span><span>Updated ${when(i.updatedAt)}</span></div>
+<figure class="figure"><a href="${esc(raw)}"><img src="${esc(raw)}" alt="${esc(i.description || i.title)}"></a></figure>
+<p class="lead">Reference it from a document as <code>![${esc(i.title)}](image:${esc(i.id)})</code></p>`,
     user,
   );
 }

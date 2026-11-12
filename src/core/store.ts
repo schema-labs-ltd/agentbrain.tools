@@ -1,6 +1,7 @@
 import { BrainError } from "./errors.js";
 import { formatReference, newDocumentId, newOpaqueId, parseReference, type ParsedReference } from "./ids.js";
-import { one, type Sql } from "./sql.js";
+import { detectImage, IMAGE_TYPES } from "./images.js";
+import { one, toBytes, type Sql, type SqlValue } from "./sql.js";
 
 export interface Limits {
   /** Maximum UTF-8 size of one document body, in bytes. */
@@ -13,6 +14,12 @@ export interface Limits {
   revisionsPerDocument: number;
   /** Events kept per brain for catch-up. Older cursors must resynchronise. */
   eventsPerBrain: number;
+  /** Maximum size of one image, in bytes. */
+  imageBytes: number;
+  /** Maximum number of live images in one brain. */
+  brainImages: number;
+  /** Maximum total size of all live images in one brain, in bytes. */
+  brainImageBytes: number;
 }
 
 export const DEFAULT_LIMITS: Limits = {
@@ -21,7 +28,15 @@ export const DEFAULT_LIMITS: Limits = {
   brainBytes: 1024 * 1024,
   revisionsPerDocument: 50,
   eventsPerBrain: 1000,
+  imageBytes: 5 * 1024 * 1024,
+  brainImages: 20,
+  brainImageBytes: 25 * 1024 * 1024,
 };
+
+/** Image bytes are stored in chunks below the 2 MB Durable Object row limit. */
+const IMAGE_CHUNK_BYTES = 1024 * 1024;
+/** Upload and download links last this long. */
+export const IMAGE_LINK_TTL_MS = 15 * 60 * 1000;
 
 /** Who is making a change. clientName is descriptive only and is not proof of identity. */
 export interface Actor {
@@ -49,10 +64,29 @@ export interface BrainSummary {
   updatedAt: string;
 }
 
+export interface ImageSummary {
+  id: string;
+  title: string;
+  description: string;
+  mimeType: string;
+  bytes: number;
+  width: number | null;
+  height: number | null;
+  revision: number;
+  updatedAt: string;
+}
+
 export interface BrainIndex extends BrainSummary {
   cursor: string;
   documents: DocumentSummary[];
-  usage: { documents: number; bytes: number; limits: { documentBytes: number; brainDocuments: number; brainBytes: number } };
+  images: ImageSummary[];
+  usage: {
+    documents: number;
+    bytes: number;
+    images: number;
+    imageBytes: number;
+    limits: { documentBytes: number; brainDocuments: number; brainBytes: number; imageBytes: number; brainImages: number; brainImageBytes: number };
+  };
 }
 
 export interface Edit {
@@ -98,6 +132,22 @@ type BrainRow = {
   updated_at: number;
   closed_at: number | null;
   project_name: string;
+};
+
+type ImageRow = {
+  brain_id: string;
+  id: string;
+  title: string;
+  description: string;
+  mime_type: string;
+  bytes: number;
+  width: number | null;
+  height: number | null;
+  revision: number;
+  deleted: number;
+  created_at: number;
+  updated_at: number;
+  updated_by: string;
 };
 
 type DocRow = {
@@ -455,6 +505,152 @@ export class BrainStore {
     return { id, revision, title: row.title, markdown: row.body };
   }
 
+  // ---------------------------------------------------------------- images
+
+  /** Add an image. The bytes must be PNG, JPEG, GIF or WebP; the format is detected, not trusted. */
+  createImage(
+    actor: Actor,
+    reference: string,
+    input: { title: string; description?: string; data: Uint8Array },
+  ): ImageWriteResult {
+    return this.sql.transaction(() => this.insertImage(actor, this.loadActiveBrain(actor.userId, reference), input));
+  }
+
+  /** An image's metadata and bytes. */
+  readImage(userId: string, reference: string, id: string): { image: ImageSummary & { updatedBy: { client: string; clientName: string | null } }; data: Uint8Array } {
+    const brain = this.loadActiveBrain(userId, reference);
+    const row = this.findImage(brain.id, id);
+    if (!row) throw new BrainError("not_found", `Image ${id} does not exist in this brain (it may have been deleted).`);
+    return { image: { ...imageSummary(row), updatedBy: parseActor(row.updated_by) }, data: this.imageBytes(brain.id, row) };
+  }
+
+  /** Change an image's title or description. The image itself never changes. Revision-checked. */
+  updateImage(
+    actor: Actor,
+    reference: string,
+    input: { id: string; baseRevision: number; title?: string; description?: string },
+  ): ImageWriteResult {
+    return this.sql.transaction(() => {
+      const brain = this.loadActiveBrain(actor.userId, reference);
+      const row = this.checkImageRevision(brain.id, input.id, input.baseRevision);
+      const title = input.title !== undefined ? requireText(input.title, "title", 200) : row.title;
+      const description = input.description !== undefined ? input.description.trim().slice(0, 1000) : row.description;
+      const revision = row.revision + 1;
+      this.sql.run(
+        `UPDATE images SET title = ?, description = ?, revision = ?, updated_at = ?, updated_by = ? WHERE brain_id = ? AND id = ?`,
+        title,
+        description,
+        revision,
+        this.now(),
+        actorString(actor),
+        brain.id,
+        row.id,
+      );
+      return this.finishImageWrite(brain, row.id, "image.updated", actor);
+    });
+  }
+
+  /** Delete an image and its bytes. Revision-checked; the ID is never reused. */
+  deleteImage(actor: Actor, reference: string, input: { id: string; baseRevision: number }): ImageWriteResult {
+    return this.sql.transaction(() => {
+      const brain = this.loadActiveBrain(actor.userId, reference);
+      const row = this.checkImageRevision(brain.id, input.id, input.baseRevision);
+      const revision = row.revision + 1;
+      this.sql.run(
+        `UPDATE images SET deleted = 1, bytes = 0, revision = ?, updated_at = ?, updated_by = ? WHERE brain_id = ? AND id = ?`,
+        revision,
+        this.now(),
+        actorString(actor),
+        brain.id,
+        row.id,
+      );
+      this.sql.run(`DELETE FROM image_chunks WHERE brain_id = ? AND image_id = ?`, brain.id, row.id);
+      this.sql.run(`DELETE FROM image_links WHERE brain_id = ? AND image_id = ?`, brain.id, row.id);
+      const seq = this.appendEvent(brain.id, "image.deleted", row.id, revision, actor);
+      this.touch(brain.id);
+      return { image: { id: row.id, revision, deleted: true }, cursor: String(seq), warnings: [] };
+    });
+  }
+
+  /**
+   * Record a single-use upload link for a new image. The caller generates the
+   * secret token and passes only its hash. Checks the image count limit early
+   * so an agent does not upload into a full brain.
+   */
+  createUploadLink(actor: Actor, reference: string, tokenHash: string, input: { title: string; description?: string }): { expiresAt: string; maxBytes: number } {
+    return this.sql.transaction(() => {
+      const brain = this.loadActiveBrain(actor.userId, reference);
+      const title = requireText(input.title, "title", 200);
+      const usage = this.imageUsage(brain.id);
+      this.checkImageLimits(usage, 0, true);
+      this.purgeLinks();
+      const expires = this.now() + IMAGE_LINK_TTL_MS;
+      this.sql.run(
+        `INSERT INTO image_links (token_hash, kind, user_id, brain_id, image_id, title, description, actor, expires_at) VALUES (?, 'upload', ?, ?, NULL, ?, ?, ?, ?)`,
+        tokenHash,
+        actor.userId,
+        brain.id,
+        title,
+        (input.description ?? "").trim().slice(0, 1000),
+        actorString(actor),
+        expires,
+      );
+      return { expiresAt: iso(expires), maxBytes: this.limits.imageBytes };
+    });
+  }
+
+  /**
+   * Use an upload link. The link is spent only when the image is stored, so a
+   * rejected file (wrong type, too large) can be fixed and sent again.
+   */
+  uploadWithLink(tokenHash: string, data: Uint8Array): ImageWriteResult & { reference: string } {
+    return this.sql.transaction(() => {
+      const link = this.liveLink(tokenHash, "upload");
+      const stored = JSON.parse(link.actor) as { user: string; client: string; clientName: string | null };
+      const actor: Actor = { userId: stored.user, clientId: stored.client, clientName: stored.clientName ?? undefined };
+      const brain = this.loadBrain(link.user_id, { brainId: link.brain_id });
+      if (brain.status !== "active") throw new BrainError("brain_closed", "This brain has been closed and its content deleted.");
+      const result = this.insertImage(actor, brain, { title: link.title ?? "Untitled image", description: link.description ?? "", data });
+      this.sql.run(`DELETE FROM image_links WHERE token_hash = ?`, tokenHash);
+      return { ...result, reference: formatReference(brain.project_id, brain.id) };
+    });
+  }
+
+  /** Record a download link for an existing image. Usable until it expires. */
+  createDownloadLink(userId: string, reference: string, id: string, tokenHash: string): { expiresAt: string; image: ImageSummary } {
+    return this.sql.transaction(() => {
+      const brain = this.loadActiveBrain(userId, reference);
+      const row = this.findImage(brain.id, id);
+      if (!row) throw new BrainError("not_found", `Image ${id} does not exist in this brain (it may have been deleted).`);
+      this.purgeLinks();
+      const expires = this.now() + IMAGE_LINK_TTL_MS;
+      this.sql.run(
+        `INSERT INTO image_links (token_hash, kind, user_id, brain_id, image_id, title, description, actor, expires_at) VALUES (?, 'download', ?, ?, ?, NULL, NULL, '{}', ?)`,
+        tokenHash,
+        userId,
+        brain.id,
+        row.id,
+        expires,
+      );
+      return { expiresAt: iso(expires), image: imageSummary(row) };
+    });
+  }
+
+  /** Read an image through a download link. */
+  downloadWithLink(tokenHash: string): { image: ImageSummary; data: Uint8Array } {
+    const link = this.liveLink(tokenHash, "download");
+    const brain = this.loadBrain(link.user_id, { brainId: link.brain_id });
+    const row = brain.status === "active" && link.image_id ? this.findImage(brain.id, link.image_id) : undefined;
+    if (!row) throw new BrainError("not_found", "This link has expired or the image no longer exists.");
+    return { image: imageSummary(row), data: this.imageBytes(brain.id, row) };
+  }
+
+  /** Read an image by ID for the website, which authenticates the owner itself. */
+  imageForWebsite(userId: string, reference: string, id: string): { image: ImageSummary; data: Uint8Array } {
+    const { image, data } = this.readImage(userId, reference, id);
+    return { image, data };
+  }
+
   // ---------------------------------------------------------------- changes
 
   getChanges(
@@ -466,7 +662,7 @@ export class BrainStore {
     cursor: string;
     hasMore: boolean;
     resyncRequired?: boolean;
-    events: { id: string; seq: number; type: string; documentId: string | null; revision: number | null; client: string; clientName: string | null; at: string }[];
+    events: ChangeEvent[];
   } {
     const brain = this.loadActiveBrain(userId, reference);
     const after = cursor === undefined || cursor === "" ? 0 : Number(cursor);
@@ -494,7 +690,7 @@ export class BrainStore {
         id: r.id,
         seq: r.seq,
         type: r.type,
-        documentId: r.document_id,
+        ...subjectOf(r.type, r.document_id),
         revision: r.revision,
         ...parseActor(r.actor),
         at: iso(r.created_at),
@@ -528,6 +724,9 @@ export class BrainStore {
       this.sql.run(`DELETE FROM revisions WHERE brain_id = ?`, brain.id);
       this.sql.run(`DELETE FROM events WHERE brain_id = ?`, brain.id);
       this.sql.run(`DELETE FROM idempotency WHERE brain_id = ?`, brain.id);
+      this.sql.run(`DELETE FROM images WHERE brain_id = ?`, brain.id);
+      this.sql.run(`DELETE FROM image_chunks WHERE brain_id = ?`, brain.id);
+      this.sql.run(`DELETE FROM image_links WHERE brain_id = ?`, brain.id);
       this.sql.run(
         `UPDATE brains SET status = 'closed', title = NULL, description = NULL, closed_at = ?, updated_at = ? WHERE id = ?`,
         now,
@@ -553,6 +752,7 @@ export class BrainStore {
       exportedAt: iso(this.now()),
       finalCursor: String(brain.last_seq),
       documents: docs.map((d) => ({ ...docSummary(d), markdown: d.body })),
+      images: this.liveImages(brain.id).map(imageSummary),
     };
   }
 
@@ -653,8 +853,12 @@ export class BrainStore {
     const brain = this.loadActiveBrain(userId, reference);
     return this.sql
       .all<{ seq: number; type: string; document_id: string | null; revision: number | null; actor: string; created_at: number; title: string | null; deleted: number | null }>(
-        `SELECT e.seq, e.type, e.document_id, e.revision, e.actor, e.created_at, d.title, d.deleted
-         FROM events e LEFT JOIN documents d ON d.brain_id = e.brain_id AND d.id = e.document_id
+        `SELECT e.seq, e.type, e.document_id, e.revision, e.actor, e.created_at,
+           CASE WHEN e.type LIKE 'image.%' THEN i.title ELSE d.title END AS title,
+           CASE WHEN e.type LIKE 'image.%' THEN i.deleted ELSE d.deleted END AS deleted
+         FROM events e
+         LEFT JOIN documents d ON d.brain_id = e.brain_id AND d.id = e.document_id
+         LEFT JOIN images i ON i.brain_id = e.brain_id AND i.id = e.document_id
          WHERE e.brain_id = ? ORDER BY e.seq DESC LIMIT ?`,
         brain.id,
         Math.min(Math.max(limit, 1), 100),
@@ -662,8 +866,10 @@ export class BrainStore {
       .map((r) => ({
         seq: r.seq,
         type: r.type,
-        documentId: r.document_id,
-        documentTitle: r.deleted ? null : r.title,
+        documentId: r.type.startsWith("image.") ? null : r.document_id,
+        documentTitle: r.type.startsWith("image.") || r.deleted ? null : r.title,
+        imageId: r.type.startsWith("image.") ? r.document_id : null,
+        imageTitle: r.type.startsWith("image.") && !r.deleted ? r.title : null,
         revision: r.revision,
         ...parseActor(r.actor),
         at: iso(r.created_at),
@@ -857,6 +1063,153 @@ export class BrainStore {
     return seq;
   }
 
+  private insertImage(actor: Actor, brain: BrainRow, input: { title: string; description?: string; data: Uint8Array }): ImageWriteResult {
+    const title = requireText(input.title, "title", 200);
+    const description = (input.description ?? "").trim().slice(0, 1000);
+    const data = input.data;
+    if (data.length === 0) throw new BrainError("invalid_request", "The image is empty.");
+    const info = detectImage(data);
+    if (!info) {
+      throw new BrainError("unsupported_image", `The file is not a supported image. Upload one of: ${IMAGE_TYPES.join(", ")}. SVG is not accepted.`, {
+        supported: IMAGE_TYPES,
+      });
+    }
+    if (data.length > this.limits.imageBytes) {
+      throw new BrainError("limit_exceeded", "The image exceeds the per-image size limit. Resize or compress it, then retry.", {
+        limit: "imageBytes",
+        maximum: this.limits.imageBytes,
+        attempted: data.length,
+      });
+    }
+    this.checkImageLimits(this.imageUsage(brain.id), data.length, true);
+    const id = newDocumentId();
+    const now = this.now();
+    this.sql.run(
+      `INSERT INTO images (brain_id, id, title, description, mime_type, bytes, width, height, revision, deleted, created_at, updated_at, updated_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?, ?)`,
+      brain.id,
+      id,
+      title,
+      description,
+      info.mimeType,
+      data.length,
+      info.width,
+      info.height,
+      now,
+      now,
+      actorString(actor),
+    );
+    for (let i = 0, idx = 0; i < data.length; i += IMAGE_CHUNK_BYTES, idx++) {
+      this.sql.run(
+        `INSERT INTO image_chunks (brain_id, image_id, idx, data) VALUES (?, ?, ?, ?)`,
+        brain.id,
+        id,
+        idx,
+        data.subarray(i, Math.min(i + IMAGE_CHUNK_BYTES, data.length)),
+      );
+    }
+    return this.finishImageWrite(brain, id, "image.created", actor);
+  }
+
+  private finishImageWrite(brain: BrainRow, id: string, type: string, actor: Actor): ImageWriteResult {
+    const row = this.findImage(brain.id, id)!;
+    const seq = this.appendEvent(brain.id, type, id, row.revision, actor);
+    this.touch(brain.id);
+    return { image: imageSummary(row), cursor: String(seq), warnings: this.imageWarnings(brain.id) };
+  }
+
+  private liveImages(brainId: string): ImageRow[] {
+    return this.sql.all<ImageRow>(`SELECT * FROM images WHERE brain_id = ? AND deleted = 0 ORDER BY created_at, rowid`, brainId);
+  }
+
+  private findImage(brainId: string, id: string): ImageRow | undefined {
+    return one<ImageRow>(this.sql, `SELECT * FROM images WHERE brain_id = ? AND id = ? AND deleted = 0`, brainId, id);
+  }
+
+  private imageBytes(brainId: string, row: ImageRow): Uint8Array {
+    const chunks = this.sql
+      .all<{ data: SqlValue }>(`SELECT data FROM image_chunks WHERE brain_id = ? AND image_id = ? ORDER BY idx`, brainId, row.id)
+      .map((c) => toBytes(c.data));
+    const out = new Uint8Array(row.bytes);
+    let offset = 0;
+    for (const c of chunks) {
+      out.set(c, offset);
+      offset += c.length;
+    }
+    if (offset !== row.bytes) throw new Error(`Image ${row.id} is incomplete in storage.`);
+    return out;
+  }
+
+  private checkImageRevision(brainId: string, id: string, baseRevision: number): ImageRow {
+    const row = this.findImage(brainId, id);
+    if (!row) throw new BrainError("not_found", `Image ${id} does not exist in this brain (it may have been deleted).`);
+    if (row.revision !== baseRevision) {
+      throw new BrainError(
+        "conflict",
+        `Image ${id} has changed since revision ${baseRevision}. Check the current details below, reapply your change and retry with baseRevision ${row.revision}.`,
+        { current: { ...imageSummary(row), updatedBy: parseActor(row.updated_by) } },
+      );
+    }
+    return row;
+  }
+
+  private imageUsage(brainId: string): { images: number; bytes: number } {
+    const row = one<{ images: number; bytes: number | null }>(
+      this.sql,
+      `SELECT COUNT(*) AS images, SUM(bytes) AS bytes FROM images WHERE brain_id = ? AND deleted = 0`,
+      brainId,
+    )!;
+    return { images: row.images, bytes: row.bytes ?? 0 };
+  }
+
+  private checkImageLimits(usage: { images: number; bytes: number }, addBytes: number, addImage: boolean): void {
+    const { limits } = this;
+    if (addImage && usage.images + 1 > limits.brainImages) {
+      throw new BrainError("limit_exceeded", "The brain already holds the maximum number of images. Delete images that are no longer needed, then retry.", {
+        limit: "brainImages",
+        maximum: limits.brainImages,
+        current: usage.images,
+      });
+    }
+    if (usage.bytes + addBytes > limits.brainImageBytes) {
+      throw new BrainError("limit_exceeded", "The brain would exceed its total image size limit. Delete or compress images, then retry.", {
+        limit: "brainImageBytes",
+        maximum: limits.brainImageBytes,
+        current: usage.bytes,
+        attempted: usage.bytes + addBytes,
+      });
+    }
+  }
+
+  private imageWarnings(brainId: string): string[] {
+    const { limits } = this;
+    const usage = this.imageUsage(brainId);
+    const warnings: string[] = [];
+    if (usage.images >= limits.brainImages * SOFT_LIMIT_RATIO) {
+      warnings.push(`Brain has ${usage.images} of ${limits.brainImages} images. Delete images that no longer carry anything the documents need.`);
+    }
+    if (usage.bytes >= limits.brainImageBytes * SOFT_LIMIT_RATIO) {
+      warnings.push(`Brain holds ${usage.bytes} of ${limits.brainImageBytes} image bytes. Delete or compress images before adding more.`);
+    }
+    return warnings;
+  }
+
+  private liveLink(tokenHash: string, kind: "upload" | "download"): { user_id: string; brain_id: string; image_id: string | null; title: string | null; description: string | null; actor: string } {
+    const link = one<{ kind: string; user_id: string; brain_id: string; image_id: string | null; title: string | null; description: string | null; actor: string; expires_at: number }>(
+      this.sql,
+      `SELECT * FROM image_links WHERE token_hash = ?`,
+      tokenHash,
+    );
+    if (!link || link.kind !== kind || link.expires_at <= this.now()) {
+      throw new BrainError("not_found", `This ${kind} link is invalid, already used or expired. Ask for a new one.`);
+    }
+    return link;
+  }
+
+  private purgeLinks(): void {
+    this.sql.run(`DELETE FROM image_links WHERE expires_at <= ?`, this.now());
+  }
+
   private touch(brainId: string): void {
     this.sql.run(`UPDATE brains SET updated_at = ? WHERE id = ?`, this.now(), brainId);
   }
@@ -879,16 +1232,23 @@ export class BrainStore {
       row.id,
     );
     const usage = this.usage(row.id);
+    const images = this.imageUsage(row.id);
     return {
       ...this.summary(row),
       cursor: String(row.last_seq),
       documents: docs.map(docSummary),
+      images: this.liveImages(row.id).map(imageSummary),
       usage: {
         ...usage,
+        images: images.images,
+        imageBytes: images.bytes,
         limits: {
           documentBytes: this.limits.documentBytes,
           brainDocuments: this.limits.brainDocuments,
           brainBytes: this.limits.brainBytes,
+          imageBytes: this.limits.imageBytes,
+          brainImages: this.limits.brainImages,
+          brainImageBytes: this.limits.brainImageBytes,
         },
       },
     };
@@ -915,10 +1275,32 @@ export interface ActivityItem {
   type: string;
   documentId: string | null;
   documentTitle: string | null;
+  imageId: string | null;
+  imageTitle: string | null;
   revision: number | null;
   client: string;
   clientName: string | null;
   at: string;
+}
+
+export interface ChangeEvent {
+  id: string;
+  seq: number;
+  type: string;
+  /** The document an event is about, for document.* events. */
+  documentId: string | null;
+  /** The image an event is about, for image.* events. */
+  imageId: string | null;
+  revision: number | null;
+  client: string;
+  clientName: string | null;
+  at: string;
+}
+
+export interface ImageWriteResult {
+  image: ImageSummary | { id: string; revision: number; deleted: true };
+  cursor: string;
+  warnings: string[];
 }
 
 export interface WriteResult {
@@ -937,6 +1319,8 @@ export interface BrainExport {
   exportedAt: string;
   finalCursor: string;
   documents: (DocumentSummary & { markdown: string })[];
+  /** Image metadata only. The bytes are not included in an inline export. */
+  images: ImageSummary[];
 }
 
 export interface CloseResult {
@@ -945,6 +1329,25 @@ export interface CloseResult {
   closedAt: string;
   alreadyClosed: boolean;
   export: BrainExport | null;
+}
+
+/** Image events keep the image ID in the events table's document_id column. */
+function subjectOf(type: string, id: string | null): { documentId: string | null; imageId: string | null } {
+  return type.startsWith("image.") ? { documentId: null, imageId: id } : { documentId: id, imageId: null };
+}
+
+function imageSummary(r: ImageRow): ImageSummary {
+  return {
+    id: r.id,
+    title: r.title,
+    description: r.description,
+    mimeType: r.mime_type,
+    bytes: r.bytes,
+    width: r.width,
+    height: r.height,
+    revision: r.revision,
+    updatedAt: iso(r.updated_at),
+  };
 }
 
 function docSummary(d: DocRow): DocumentSummary {

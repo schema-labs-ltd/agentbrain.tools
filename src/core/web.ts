@@ -1,6 +1,7 @@
 import type { Context, Hono } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { verifyPassword } from "./crypto.js";
+import { extensionFor, imageHeaders } from "./images.js";
 import { BrainError } from "./errors.js";
 import { renderMarkdown } from "./markdown.js";
 import { SERVER_VERSION } from "./mcp.js";
@@ -8,6 +9,7 @@ import {
   brainPage,
   closedBrainPage,
   documentPage,
+  imagePage,
   landingPage,
   loginPage,
   messagePage,
@@ -171,7 +173,7 @@ export function registerWebsite(app: Hono, opts: { base: string; store: BrainSto
           id,
           title: shown.title,
           description: isLatest ? current.description : "",
-          html: renderMarkdown(shown.markdown),
+          html: renderMarkdown(shown.markdown, { imageBase: `/brains/${c.req.param("project")}/${c.req.param("brain")}/images` }),
           markdown: shown.markdown,
           revision: shown.revision,
           latestRevision: current.revision,
@@ -181,6 +183,28 @@ export function registerWebsite(app: Hono, opts: { base: string; store: BrainSto
           history: history.map((h) => ({ revision: h.revision, kind: h.kind, summary: h.summary, clientName: h.clientName, at: h.at })),
         }),
       );
+    }),
+  );
+
+  app.get(
+    "/brains/:project/:brain/images/:image",
+    signedIn((c, user) => {
+      const reference = referenceOf(c);
+      const summary = store.describeBrain(user.userId, reference);
+      if (summary.status !== "active") return html(closedBrainPage(user, summary));
+      const index = store.getIndex(user.userId, reference);
+      const image = index.images.find((i) => i.id === c.req.param("image")!.toLowerCase());
+      if (!image) return html(messagePage("Not found", "That image does not exist or was deleted.", user), 404);
+      return html(imagePage(user, summary, image));
+    }),
+  );
+
+  // The image bytes, for <img> tags on these pages. Signed-out requests get a redirect, never the bytes.
+  app.get(
+    "/brains/:project/:brain/images/:image/raw",
+    signedIn((c, user) => {
+      const { image, data } = store.imageForWebsite(user.userId, referenceOf(c), c.req.param("image")!.toLowerCase());
+      return new Response(data as Uint8Array<ArrayBuffer>, { headers: imageHeaders(image.mimeType, `${image.title}.${extensionFor(image.mimeType)}`) });
     }),
   );
 }

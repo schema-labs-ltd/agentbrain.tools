@@ -1,6 +1,6 @@
 # Change events
 
-Agent Brain records every change to a brain in a durable change feed: brain created or updated, document created, updated, renamed or deleted, and brain closed. Agents can always read the feed with `get_changes` and a cursor. On top of that feed, two clients can be told about changes as they happen:
+Agent Brain records every change to a brain in a durable change feed: brain created or updated, document created, updated, renamed or deleted, image added, updated or deleted, and brain closed. Image events carry `imageId` and `imageTitle` instead of a document. Agents can always read the feed with `get_changes` and a cursor. On top of that feed, two clients can be told about changes as they happen:
 
 | Client | How events arrive | What runs where |
 | --- | --- | --- |

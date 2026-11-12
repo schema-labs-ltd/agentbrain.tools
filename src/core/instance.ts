@@ -18,6 +18,9 @@ export interface InstanceConfig {
   LIMIT_BRAIN_BYTES?: string;
   LIMIT_REVISIONS_PER_DOCUMENT?: string;
   LIMIT_EVENTS_PER_BRAIN?: string;
+  LIMIT_IMAGE_BYTES?: string;
+  LIMIT_BRAIN_IMAGES?: string;
+  LIMIT_BRAIN_IMAGE_BYTES?: string;
 }
 
 function intOr(value: string | undefined, fallback: number): number {
@@ -32,6 +35,9 @@ export function limitsFrom(config: InstanceConfig): Limits {
     brainBytes: intOr(config.LIMIT_BRAIN_BYTES, DEFAULT_LIMITS.brainBytes),
     revisionsPerDocument: intOr(config.LIMIT_REVISIONS_PER_DOCUMENT, DEFAULT_LIMITS.revisionsPerDocument),
     eventsPerBrain: intOr(config.LIMIT_EVENTS_PER_BRAIN, DEFAULT_LIMITS.eventsPerBrain),
+    imageBytes: intOr(config.LIMIT_IMAGE_BYTES, DEFAULT_LIMITS.imageBytes),
+    brainImages: intOr(config.LIMIT_BRAIN_IMAGES, DEFAULT_LIMITS.brainImages),
+    brainImageBytes: intOr(config.LIMIT_BRAIN_IMAGE_BYTES, DEFAULT_LIMITS.brainImageBytes),
   };
 }
 
@@ -76,6 +82,6 @@ export function createInstance(
     throw e;
   }));
   const sessions = new WebSessionService(sql, now);
-  const app = createApp({ publicUrl: config.PUBLIC_URL, store, oauth, events, sessions, ready, afterMcpRequest: deps.afterMcpRequest });
+  const app = createApp({ publicUrl: config.PUBLIC_URL, store, oauth, events, sessions, ready, afterMcpRequest: deps.afterMcpRequest, fetch: deps.fetch });
   return { app, store, oauth, events };
 }

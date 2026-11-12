@@ -171,6 +171,46 @@ const MIGRATIONS: string[][] = [
       window_start INTEGER NOT NULL
     )`,
   ],
+  [
+    // Images shared in a brain. Content is immutable; title and description are revisioned like documents.
+    `CREATE TABLE images (
+      brain_id TEXT NOT NULL,
+      id TEXT NOT NULL,
+      title TEXT NOT NULL,
+      description TEXT NOT NULL,
+      mime_type TEXT NOT NULL,
+      bytes INTEGER NOT NULL,
+      width INTEGER,
+      height INTEGER,
+      revision INTEGER NOT NULL,
+      deleted INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      updated_by TEXT NOT NULL,
+      PRIMARY KEY (brain_id, id)
+    )`,
+    // Image bytes, split into chunks because a Durable Object SQLite row is limited to 2 MB.
+    `CREATE TABLE image_chunks (
+      brain_id TEXT NOT NULL,
+      image_id TEXT NOT NULL,
+      idx INTEGER NOT NULL,
+      data BLOB NOT NULL,
+      PRIMARY KEY (brain_id, image_id, idx)
+    )`,
+    // Short-lived upload and download links. Only a hash of the link token is stored.
+    `CREATE TABLE image_links (
+      token_hash TEXT PRIMARY KEY,
+      kind TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      brain_id TEXT NOT NULL,
+      image_id TEXT,
+      title TEXT,
+      description TEXT,
+      actor TEXT NOT NULL,
+      expires_at INTEGER NOT NULL
+    )`,
+    `CREATE INDEX image_links_brain ON image_links (brain_id)`,
+  ],
 ];
 
 export function migrate(sql: Sql): void {

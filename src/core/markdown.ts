@@ -7,7 +7,7 @@ import { Marked, type Tokens } from "marked";
  * Content comes from agents, so it is treated as untrusted:
  * - raw HTML in the Markdown is shown as text, never passed through;
  * - links keep only http(s), mailto and same-site targets;
- * - images load only over https;
+ * - images load only over https, or from the brain itself via "image:<id>";
  * - everything else is escaped by marked or highlight.js.
  * GitHub-flavoured Markdown (tables, task lists, strikethrough, autolinks) is on.
  */
@@ -50,7 +50,15 @@ function highlight(code: string, lang: string | undefined): { html: string; lang
   return { html: escapeHtml(code), language: name || null };
 }
 
-function createRenderer(): Marked {
+/** Matches an in-brain image reference, ![alt](image:<id>). */
+const IMAGE_REF = /^image:([0-9a-z]{16})$/i;
+
+export interface RenderOptions {
+  /** Site path of the brain's images, for example /brains/<project>/<brain>/images. Enables image:<id> references. */
+  imageBase?: string;
+}
+
+function createRenderer(opts: RenderOptions): Marked {
   const headingIds = new Map<string, number>();
   const marked = new Marked({
     gfm: true,
@@ -95,6 +103,13 @@ function createRenderer(): Marked {
         return `<a href="${escapeHtml(safe)}"${t}${rel}>${inner}</a>`;
       },
       image({ href, title, text }: Tokens.Image) {
+        const ref = IMAGE_REF.exec(href.trim());
+        if (ref) {
+          if (!opts.imageBase) return escapeHtml(text ? `[image: ${text}]` : "[image]");
+          const page = `${opts.imageBase}/${ref[1]!.toLowerCase()}`;
+          const t = title ? ` title="${escapeHtml(title)}"` : "";
+          return `<a class="brain-image" href="${escapeHtml(page)}"><img src="${escapeHtml(`${page}/raw`)}" alt="${escapeHtml(text)}"${t} loading="lazy"></a>`;
+        }
         const safe = safeHref(href, { images: true });
         if (!safe) return escapeHtml(text ? `[image: ${text}]` : "[image]");
         const t = title ? ` title="${escapeHtml(title)}"` : "";
@@ -105,7 +120,7 @@ function createRenderer(): Marked {
   return marked;
 }
 
-export function renderMarkdown(markdown: string): string {
+export function renderMarkdown(markdown: string, opts: RenderOptions = {}): string {
   // A fresh instance per call keeps heading IDs unique within one document only.
-  return createRenderer().parse(markdown, { async: false }) as string;
+  return createRenderer(opts).parse(markdown, { async: false }) as string;
 }

@@ -8,15 +8,20 @@ export interface Env extends InstanceConfig {
   AGENT_BRAIN: DurableObjectNamespace<AgentBrainStore>;
 }
 
+/** Durable Object SQLite binds BLOBs from ArrayBuffer, not from typed-array views. */
+function bindable(params: SqlValue[]): (string | number | null | ArrayBuffer)[] {
+  return params.map((p) => (p instanceof Uint8Array ? (p.buffer.slice(p.byteOffset, p.byteOffset + p.byteLength) as ArrayBuffer) : p));
+}
+
 /** Sql adapter over Durable Object SQLite storage. Nested transactions join the outer one. */
 function durableObjectSql(storage: DurableObjectStorage): Sql {
   let depth = 0;
   return {
     all<T extends Row = Row>(sql: string, ...params: SqlValue[]): T[] {
-      return storage.sql.exec<T>(sql, ...params).toArray();
+      return storage.sql.exec(sql, ...bindable(params)).toArray() as unknown as T[];
     },
     run(sql: string, ...params: SqlValue[]): number {
-      return storage.sql.exec(sql, ...params).rowsWritten;
+      return storage.sql.exec(sql, ...bindable(params)).rowsWritten;
     },
     transaction<T>(fn: () => T): T {
       if (depth > 0) return fn();

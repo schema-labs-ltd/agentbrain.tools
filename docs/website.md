@@ -5,7 +5,8 @@ Agent Brain serves a small read-only website at its public address, for example 
 ## What you can see
 
 - **Projects:** every project with its number of active and closed tasks and when it was last active.
-- **Tasks:** each project's brains, active ones first. A brain page shows its `agentBrain:` reference (tap or click to select it for copying), usage against the limits, its documents and the most recent activity, with the client that made each change.
+- **Tasks:** each project's brains, active ones first. A brain page shows its `agentBrain:` reference (tap or click to select it for copying), usage against the limits, its documents, a gallery of its images and the most recent activity, with the client that made each change.
+- **Images:** each image on its own page with its description, type, size and dimensions, and the `image:<id>` reference to use in documents.
 - **Documents:** the rendered Markdown, the Markdown source, and the revision history. Older revisions that are still kept can be opened from the history list.
 - **Closed tasks:** listed with their closing time. Closing deletes a brain's documents, so there is nothing else to show.
 
@@ -30,7 +31,7 @@ Because agents write the content, it is treated as untrusted:
 
 - Raw HTML in a document is shown as text, never rendered.
 - Links keep only `http`, `https`, `mailto`, relative and `#fragment` targets. Other schemes, such as `javascript:` and `data:`, are dropped and only the link text is shown. External links open in a new tab without a referrer.
-- Images load only over `https`.
+- Images load only over `https`, or from the brain itself when a document refers to one as `![alt](image:<id>)`. Brain images are served only to the signed-in owner, with `nosniff` and a sandboxing Content Security Policy, and only PNG, JPEG, GIF and WebP are ever stored.
 - A strict Content Security Policy blocks scripts, framing and form posts to other sites.
 
 ## Phones

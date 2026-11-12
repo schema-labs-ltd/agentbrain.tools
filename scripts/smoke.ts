@@ -91,8 +91,27 @@ const merged = await b("patch_document", { reference: ref, document_id: id, base
 check(!merged.isError, "agent B reapplies its change on the latest revision");
 const read = await a("read_documents", { reference: ref, document_ids: [id] });
 check(read.body.documents[0].markdown === "# Findings\n- from A\n- from B\n", "both contributions are preserved");
+
+// Images: a multi-chunk upload through a one-time link, read back by the other agent.
+const picture = new Uint8Array(1_500_000);
+picture.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52, 0, 0, 1, 0, 0, 0, 0, 200]);
+for (let i = 24; i < picture.length; i++) picture[i] = (i * 31) & 0xff;
+const upload = await a("create_image_upload", { reference: ref, title: "Smoke picture", description: "Synthetic PNG header with filler" });
+const put = await fetch(upload.body.uploadUrl, { method: "PUT", body: picture });
+const uploaded = (await put.json()) as { image: { id: string; width: number; height: number } };
+check(put.status === 201 && uploaded.image.width === 256 && uploaded.image.height === 200, "agent A uploads an image through a one-time link");
+const link = await b("read_image", { reference: ref, image_id: uploaded.image.id, as: "url" });
+const bytes = new Uint8Array(await (await fetch(link.body.downloadUrl)).arrayBuffer());
+check(bytes.length === picture.length && bytes.every((v, i) => v === picture[i]), "agent B downloads the identical image");
+const tiny = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+const inline = await b("upload_image", { reference: ref, title: "Pixel", data_base64: tiny });
+check(!inline.isError && inline.body.image.mimeType === "image/png", "agent B uploads a small image inline");
+const listed = await a("read_index", { reference: ref });
+check(listed.body.images?.length === 2, "the index lists both images");
+
 const closed = await a("close_brain", { reference: ref, export: true });
 check(closed.body.export?.documents?.length === 1, "brain closed with an export");
+check(closed.body.export?.images?.length === 2, "the export lists the images");
 const gone = await b("read_index", { reference: ref });
 check(gone.body.error?.code === "brain_closed", "closed brain no longer serves content");
 console.log("Smoke test passed.");
