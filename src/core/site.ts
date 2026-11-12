@@ -378,7 +378,9 @@ export function imagePage(user: SiteUser, brain: BrainSummary, i: ImageSummary):
 ${i.description ? `<p class="lead">${esc(i.description)}</p>` : ""}
 <div class="meta"><span>${esc(imageType(i.mimeType))}</span>${dimensions(i) ? `<span>${dimensions(i)}</span>` : ""}<span>${size(i.bytes)}</span><span>Revision ${i.revision}</span><span>Updated ${when(i.updatedAt)}</span></div>
 <figure class="figure"><a href="${esc(raw)}"><img src="${esc(raw)}" alt="${esc(i.description || i.title)}"></a></figure>
-<p class="lead">Reference it from a document as <code>![${esc(i.title)}](image:${esc(i.id)})</code></p>`,
+<p class="lead">Reference it from a document as <code>![${esc(i.title)}](image:${esc(i.id)})</code></p>
+<p class="lead">Public link, for GitHub and other tools (anyone with it can view the image):</p>
+<code class="ref">${esc(i.url)}</code>`,
     user,
   );
 }

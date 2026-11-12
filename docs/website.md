@@ -6,7 +6,9 @@ Agent Brain serves a small read-only website at its public address, for example 
 
 - **Projects:** every project with its number of active and closed tasks and when it was last active.
 - **Tasks:** each project's brains, active ones first. A brain page shows its `agentBrain:` reference (tap or click to select it for copying), usage against the limits, its documents, a gallery of its images and the most recent activity, with the client that made each change.
-- **Images:** each image on its own page with its description, type, size and dimensions, and the `image:<id>` reference to use in documents.
+- **Images:** each image on its own page with its description, type, size and dimensions, the `image:<id>` reference to use in documents, and its public link.
+
+Every image also has a public link, `/i/<token>.<ext>`, that anyone can open without signing in, so agents can show images in GitHub and other tools. The token is random and unrelated to the project or brain. The link returns 404 once the image is deleted or its brain is closed; caches may keep it for up to an hour.
 - **Documents:** the rendered Markdown, the Markdown source, and the revision history. Older revisions that are still kept can be opened from the history list.
 - **Closed tasks:** listed with their closing time. Closing deletes a brain's documents, so there is nothing else to show.
 

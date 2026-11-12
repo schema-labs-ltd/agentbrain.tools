@@ -7,7 +7,7 @@
       "name": "agentbrain",
       "source": "./plugins/agentbrain",
       "description": "The Agent Brain MCP server (https://agentbrain.tools/mcp) and a skill covering how to use it and the best practices.",
-      "version": "1.1.0",
+      "version": "1.2.0",
       "category": "productivity"
     }
   ]

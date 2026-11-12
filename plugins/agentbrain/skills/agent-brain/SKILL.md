@@ -111,11 +111,11 @@ On every write: pass `base_revision` from your read, add a one-line `change_summ
 
 ## Images
 
-Use an image when a picture carries something text cannot: a bug screenshot, a UI mock-up, a flow or architecture diagram, a chart, a whiteboard photo. PNG, JPEG, GIF and WebP only; SVG is refused. No decorative images, no screenshots of text you could write, nothing showing a secret or personal data.
+Use an image when a picture carries something text cannot: a bug screenshot, a UI mock-up, a flow or architecture diagram, a chart, a whiteboard photo. PNG, JPEG, GIF and WebP only; SVG is refused. No decorative images, no screenshots of text you could write, nothing showing a secret or personal data: **every image is public to anyone with its link.**
 
 - **Adding.** With a shell and a file: `create_image_upload`, then `curl --fail --upload-file <file> '<upload_url>'` (one use, 15 minutes). For a public https URL or a file link your app gave you: `upload_image` with `source_url`. For a small image you hold as data: `upload_image` with `data_base64`.
 - **Describing.** A stable noun-phrase title, and a description of what it shows and why it matters. Others choose from the index, and a model without vision relies on the description.
-- **Linking.** Refer to it where it matters as `![Checkout mock-up](image:<id>)`. The website renders it; agents see the ID.
+- **Linking.** In brain documents, refer to it as `![Checkout mock-up](image:<id>)`; the website renders it and agents see the ID. Every upload also returns a public `url` (also in `read_index`) that works without sign-in until the image is deleted or the brain closed: use it to show the image in a GitHub issue or PR or another tool, as `![Checkout mock-up](<url>)`.
 - **Reading.** `read_image` returns the picture to look at; `as: "url"` gives a 15-minute download link instead. Fetch only what you need.
 - **Changing.** Pixels never change: upload the new version, update the documents that point at it, then `delete_image` the old one. `update_image` fixes a title or description.
 

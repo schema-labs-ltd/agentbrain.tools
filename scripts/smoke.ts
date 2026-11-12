@@ -106,12 +106,15 @@ check(bytes.length === picture.length && bytes.every((v, i) => v === picture[i])
 const tiny = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
 const inline = await b("upload_image", { reference: ref, title: "Pixel", data_base64: tiny });
 check(!inline.isError && inline.body.image.mimeType === "image/png", "agent B uploads a small image inline");
+const pub = await fetch(inline.body.image.url);
+check(pub.status === 200 && pub.headers.get("content-type") === "image/png", "the image's public URL works without signing in");
 const listed = await a("read_index", { reference: ref });
 check(listed.body.images?.length === 2, "the index lists both images");
 
 const closed = await a("close_brain", { reference: ref, export: true });
 check(closed.body.export?.documents?.length === 1, "brain closed with an export");
 check(closed.body.export?.images?.length === 2, "the export lists the images");
+check((await fetch(inline.body.image.url)).status === 404, "the public URL stops working after close");
 const gone = await b("read_index", { reference: ref });
 check(gone.body.error?.code === "brain_closed", "closed brain no longer serves content");
 console.log("Smoke test passed.");
