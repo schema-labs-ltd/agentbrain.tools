@@ -323,3 +323,39 @@ describe("MCP OAuth with Clerk", () => {
     expect(first.ok && second.ok && first.userId === second.userId).toBe(true);
   });
 });
+
+describe("changing OWNER_EMAIL", () => {
+  it("moves the existing owner account to the new email so Clerk links it", async () => {
+    const { openSqlite } = await import("../src/node/sqlite.js");
+    const { createInstance } = await import("../src/core/instance.js");
+    const sql = openSqlite(":memory:");
+    const first = createInstance(sql, { PUBLIC_URL: BASE, OWNER_EMAIL: "old@example.com", OWNER_PASSWORD: OWNER.password });
+    await first.app.fetch(new Request(`${BASE}/healthz`));
+    const ownerId = first.store.findUserByEmail("old@example.com")!.id;
+    first.store.createBrain({ userId: ownerId, clientId: "legacy" }, { project: "Existing work" });
+
+    const clerk = await fakeClerk();
+    const second = createInstance(
+      sql,
+      { PUBLIC_URL: BASE, OWNER_EMAIL: "New@Example.com", OWNER_PASSWORD: OWNER.password, CLERK_PUBLISHABLE_KEY: PK, CLERK_SECRET_KEY: "sk_test_secret", CLERK_API_URL: API },
+      { fetch: clerk.fetch as never },
+    );
+    await second.app.fetch(new Request(`${BASE}/healthz`));
+    expect(second.store.findUserByEmail("new@example.com")!.id).toBe(ownerId);
+    expect(second.store.findUserByEmail("old@example.com")).toBeUndefined();
+    clerk.users.set("user_new", { id: "user_new", email: "new@example.com" });
+    const signedIn = await second.accounts.signInWithClerk(await clerk.token("user_new"));
+    expect(signedIn.ok && signedIn.userId).toBe(ownerId);
+    expect(second.store.listProjects(ownerId).map((p) => p.name)).toEqual(["Existing work"]);
+  });
+
+  it("does not move a Clerk-linked account or guess between several", async () => {
+    const clerk = await fakeClerk();
+    const t = clerkInstance(clerk);
+    await t.fetch(`${BASE}/healthz`);
+    clerk.users.set("user_o", { id: "user_o", email: OWNER.email });
+    await t.accounts.signInWithClerk(await clerk.token("user_o"));
+    expect(t.store.moveOwnerEmail("someone@example.com")).toBe(false);
+    expect(t.store.findUserByEmail(OWNER.email)).toBeDefined();
+  });
+});

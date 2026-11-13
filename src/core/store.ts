@@ -201,6 +201,22 @@ export class BrainStore {
     return id;
   }
 
+  /**
+   * When OWNER_EMAIL changes, move the existing owner account to the new email
+   * instead of starting an empty one. The owner is the only password account not
+   * linked to Clerk; with none or several, nothing changes. Returns true when moved.
+   */
+  moveOwnerEmail(email: string): boolean {
+    const target = email.trim().toLowerCase();
+    if (one(this.sql, `SELECT id FROM users WHERE email = ?`, target)) return false;
+    const owners = this.sql.all<{ id: string }>(
+      `SELECT id FROM users WHERE password_hash LIKE 'pbkdf2-sha256$%' AND clerk_user_id IS NULL LIMIT 2`,
+    );
+    if (owners.length !== 1) return false;
+    this.sql.run(`UPDATE users SET email = ? WHERE id = ?`, target, owners[0]!.id);
+    return true;
+  }
+
   findUserByEmail(email: string): { id: string; email: string; password_hash: string } | undefined {
     return one(this.sql, `SELECT id, email, password_hash FROM users WHERE email = ?`, email.trim().toLowerCase());
   }
