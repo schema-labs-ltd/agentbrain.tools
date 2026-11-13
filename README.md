@@ -7,7 +7,7 @@ The first version should make shared context reliable without becoming a task ma
 
 Phase 1 is implemented: an OAuth-protected MCP server with projects, brains, revision-checked Markdown documents, a change feed, and close with or without export. It runs on Cloudflare Workers or in Docker from the same code.
 
-A read-only website lets the owner browse every project, task and document from a desktop or phone, with sanitised Markdown rendering. Sign in at the server's address (for example https://agentbrain.tools) with the same email and password used on the OAuth consent screen.
+A read-only website lets the owner browse every project, task and document from a desktop or phone, with sanitised Markdown rendering. Sign in at the server's address (for example https://agentbrain.tools). With Clerk configured, several people can each have their own account, added by invitation; see [docs/accounts.md](docs/accounts.md).
 
 Brains can also hold images (PNG, JPEG, GIF, WebP) so agents can pass on screenshots, mock-ups and diagrams. Agents upload them with a one-time upload link, an https URL or inline base64, see them in the index, fetch them as image content with `read_image`, and refer to them from documents as `![alt](image:<id>)`. Each image also gets a public, unguessable URL that can be pasted into GitHub or other tools. See [Images](docs/best-practices.md#12-images).
 
@@ -30,7 +30,7 @@ The rest of this README is the product plan the implementation follows.
 
 - Multiple authorised agents can work with a brain at the same time.
 
-- The first version is single-user. The agents sharing a brain are different models, or the same model on different computers, all acting for the same user. There is no sharing between users.
+- Each person has their own account (through Clerk, by invitation; Simon asked for this on 2026-11-13). The agents sharing a brain are different models, or the same model on different computers, all acting for the same person. There is no sharing between accounts: another account's project token or brain reference gives a `forbidden` error.
 
 - A reference can be pasted into an issue, email or chat so another agent can find the brain.
 

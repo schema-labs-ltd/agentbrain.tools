@@ -7,8 +7,10 @@ Every deployment needs three settings:
 | Variable | Purpose |
 | --- | --- |
 | `PUBLIC_URL` | The HTTPS base URL agents will reach, for example `https://brain.example.com`. Used as the OAuth issuer and resource. |
-| `OWNER_EMAIL` | The email for the single owner account. |
-| `OWNER_PASSWORD` | The owner's password, at least 12 characters. Changing it and restarting replaces the stored password. The same email and password sign in to the read-only [website](website.md). |
+| `OWNER_EMAIL` | The email for the owner account. |
+| `OWNER_PASSWORD` | The owner's password, at least 12 characters. Changing it and restarting replaces the stored password. The same email and password sign in to the read-only [website](website.md). Not used for sign-in when Clerk is configured. |
+
+To give several people their own accounts, set `CLERK_PUBLISHABLE_KEY` and `CLERK_SECRET_KEY` as well. People then sign in through Clerk on the website and the OAuth consent page; see [accounts](accounts.md).
 
 Optional limits (defaults in brackets): `LIMIT_DOCUMENT_BYTES` (65536), `LIMIT_BRAIN_DOCUMENTS` (50), `LIMIT_BRAIN_BYTES` (1048576), `LIMIT_REVISIONS_PER_DOCUMENT` (50), `LIMIT_EVENTS_PER_BRAIN` (1000), `LIMIT_IMAGE_BYTES` (5242880), `LIMIT_BRAIN_IMAGES` (20), `LIMIT_BRAIN_IMAGE_BYTES` (26214400). Images live in the same SQLite database as documents, split into 1 MB chunks.
 
@@ -34,6 +36,9 @@ Remote agents need HTTPS. Put the container behind a reverse proxy that terminat
 npm ci
 npx wrangler secret put OWNER_EMAIL
 npx wrangler secret put OWNER_PASSWORD
+# Optional, for accounts through Clerk:
+npx wrangler secret put CLERK_PUBLISHABLE_KEY
+npx wrangler secret put CLERK_SECRET_KEY
 npx wrangler deploy
 ```
 

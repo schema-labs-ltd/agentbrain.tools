@@ -1,5 +1,6 @@
 // Cloudflare Workers deployment. All state lives in one SQLite-backed Durable Object.
 // Set the owner sign-in with: npx wrangler secret put OWNER_EMAIL / OWNER_PASSWORD
+// Accounts through Clerk (docs/accounts.md): npx wrangler secret put CLERK_PUBLISHABLE_KEY / CLERK_SECRET_KEY
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "agentbrain",

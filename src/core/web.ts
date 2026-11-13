@@ -1,5 +1,7 @@
 import type { Context, Hono } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
+import { CLERK_SIGN_IN_ERRORS, type AccountService } from "./accounts.js";
+import { clerkCsp, clerkPage } from "./clerkui.js";
 import { verifyPassword } from "./crypto.js";
 import { extensionFor, imageHeaders } from "./images.js";
 import { BrainError } from "./errors.js";
@@ -22,12 +24,17 @@ import type { BrainStore } from "./store.js";
 import { WEB_SESSION_TTL_MS, type WebSessionService } from "./websession.js";
 
 /**
- * The read-only website: the owner signs in with the same email and password
- * as the OAuth consent screen and can browse every project, brain and document.
+ * The read-only website: each person signs in (through Clerk, or with the owner
+ * password when Clerk is not configured) and browses their own projects, brains and documents.
  * Nothing here changes a brain. The only POSTs are sign-in and sign-out.
  */
-export function registerWebsite(app: Hono, opts: { base: string; store: BrainStore; sessions: WebSessionService }): void {
-  const { base, store, sessions } = opts;
+export function registerWebsite(app: Hono, opts: { base: string; store: BrainStore; sessions: WebSessionService; accounts: AccountService }): void {
+  const { base, store, sessions, accounts } = opts;
+  const clerkUi = accounts.clerk ? clerkPage(accounts.clerk) : undefined;
+  const loginHeaders = clerkUi
+    ? { ...SITE_HEADERS, "content-security-policy": clerkCsp(clerkUi.frontendApi, "form-action 'self'") }
+    : SITE_HEADERS;
+  const loginHtml = (body: string, status = 200) => new Response(body, { status, headers: loginHeaders });
   const secure = base.startsWith("https://");
   // __Host- cookies must be Secure, host-only and Path=/, which also stops subdomains from setting them.
   const cookieName = secure ? "__Host-agentbrain_session" : "agentbrain_session";
@@ -37,7 +44,16 @@ export function registerWebsite(app: Hono, opts: { base: string; store: BrainSto
   const redirect = (location: string, headers: Record<string, string> = {}) =>
     new Response(null, { status: 303, headers: { location, "cache-control": "no-store", ...headers } });
 
-  const currentUser = async (c: Context) => sessions.verify(getCookie(c, cookieName));
+  /** The signed-in user, if the session is valid and the account is still allowed in. */
+  const currentUser = async (c: Context) => {
+    const user = await sessions.verify(getCookie(c, cookieName));
+    if (!user) return undefined;
+    if (!(await accounts.isActive(user.userId))) {
+      await sessions.destroy(getCookie(c, cookieName));
+      return undefined;
+    }
+    return user;
+  };
 
   /** Only same-site paths may be used after sign-in, so the form cannot redirect elsewhere. */
   const safeNext = (next: unknown): string => {
@@ -66,6 +82,9 @@ export function registerWebsite(app: Hono, opts: { base: string; store: BrainSto
     try {
       return await handler(c, user);
     } catch (e) {
+      if (e instanceof BrainError && e.code === "forbidden") {
+        return html(messagePage("Belongs to another account", e.message, user), 403);
+      }
       if (e instanceof BrainError && (e.code === "not_found" || e.code === "invalid_request")) {
         return html(messagePage("Not found", "There is nothing at this address, or it is not available to you.", user), 404);
       }
@@ -88,16 +107,29 @@ export function registerWebsite(app: Hono, opts: { base: string; store: BrainSto
   app.get("/login", async (c) => {
     const next = safeNext(c.req.query("next"));
     if (await currentUser(c)) return redirect(next);
-    return html(loginPage({ next }));
+    return loginHtml(loginPage({ next, clerk: clerkUi, signedOut: c.req.query("signed_out") === "1" }));
   });
 
   app.post("/login", async (c) => {
     if (!sameOrigin(c)) return html(messagePage("Sign-in blocked", "That sign-in came from another site."), 403);
     const form = await c.req.parseBody();
     const next = safeNext(form.next);
+    const key = clientKey(c);
+    if (clerkUi) {
+      if (!sessions.canAttempt(key)) {
+        return loginHtml(loginPage({ next, clerk: clerkUi, error: "Too many failed attempts. Wait 15 minutes and try again." }), 429);
+      }
+      const result = await accounts.signInWithClerk(String(form.clerk_token ?? ""));
+      if (!result.ok) {
+        if (result.reason !== "unavailable") sessions.recordFailure(key);
+        // Sign out of Clerk too, so the page does not loop straight back into the refused account.
+        return loginHtml(loginPage({ next, clerk: clerkUi, signedOut: true, error: CLERK_SIGN_IN_ERRORS[result.reason] }), result.reason === "unavailable" ? 503 : 401);
+      }
+      sessions.clearFailures(key);
+      return startSession(c, result.userId, next);
+    }
     const email = String(form.email ?? "").slice(0, 320);
     const password = String(form.password ?? "").slice(0, 1024);
-    const key = clientKey(c);
     if (!sessions.canAttempt(key)) {
       return html(loginPage({ next, email, error: "Too many failed attempts. Wait 15 minutes and try again." }), 429);
     }
@@ -109,7 +141,11 @@ export function registerWebsite(app: Hono, opts: { base: string; store: BrainSto
       return html(loginPage({ next, email, error: "That email and password do not match." }), 401);
     }
     sessions.clearFailures(key);
-    const session = await sessions.create(user.id);
+    return startSession(c, user.id, next);
+  });
+
+  const startSession = async (c: Context, userId: string, next: string) => {
+    const session = await sessions.create(userId);
     setCookie(c, cookieName, session.token, {
       path: "/",
       httpOnly: true,
@@ -119,14 +155,15 @@ export function registerWebsite(app: Hono, opts: { base: string; store: BrainSto
     });
     c.header("cache-control", "no-store");
     return c.redirect(next, 303);
-  });
+  };
 
   app.post("/logout", async (c) => {
     if (!sameOrigin(c)) return html(messagePage("Sign-out blocked", "That request came from another site."), 403);
     await sessions.destroy(getCookie(c, cookieName));
     deleteCookie(c, cookieName, { path: "/", secure });
     c.header("cache-control", "no-store");
-    return c.redirect("/login", 303);
+    // With Clerk, the login page also signs the browser out of Clerk, so it does not sign straight back in.
+    return c.redirect(clerkUi ? "/login?signed_out=1" : "/login", 303);
   });
 
   // ---------------------------------------------------------------- browsing

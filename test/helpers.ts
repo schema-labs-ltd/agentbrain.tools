@@ -31,7 +31,7 @@ export async function registerClient(fetch: Fetch, name: string, redirect = "htt
 export async function authorize(
   fetch: Fetch,
   clientId: string,
-  opts: { email?: string; password?: string; scope?: string; decision?: string; redirect?: string } = {},
+  opts: { email?: string; password?: string; scope?: string; decision?: string; redirect?: string; clerkToken?: string } = {},
 ) {
   const verifier = newSecret();
   const challenge = await sha256Base64Url(verifier);
@@ -54,12 +54,11 @@ export async function authorize(
   const res = await fetch(`${BASE}/authorize`, {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      request_id: requestId,
-      email: opts.email ?? OWNER.email,
-      password: opts.password ?? OWNER.password,
-      decision: opts.decision ?? "allow",
-    }).toString(),
+    body: new URLSearchParams(
+      opts.clerkToken !== undefined
+        ? { request_id: requestId, clerk_token: opts.clerkToken, decision: opts.decision ?? "allow" }
+        : { request_id: requestId, email: opts.email ?? OWNER.email, password: opts.password ?? OWNER.password, decision: opts.decision ?? "allow" },
+    ).toString(),
     redirect: "manual",
   });
   return { res, verifier, redirect };

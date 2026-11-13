@@ -1,5 +1,7 @@
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { Hono, type Context } from "hono";
+import { CLERK_SIGN_IN_ERRORS, type AccountService } from "./accounts.js";
+import { CLERK_SIGNIN_JS, clerkPage } from "./clerkui.js";
 import { sha256Hex, verifyPassword } from "./crypto.js";
 import { BrainError } from "./errors.js";
 import { extensionFor, imageHeaders } from "./images.js";
@@ -7,7 +9,7 @@ import { SUPPORTED_SIGNING_ALGS } from "./jwt.js";
 import type { EventService } from "./events.js";
 import { createMcpServer, readLimited, SERVER_VERSION } from "./mcp.js";
 import { ALL_SCOPES, OAuthError, type FetchFn, type OAuthService, type Scope, type TokenInfo } from "./oauth.js";
-import { consentPage, errorPage, PAGE_HEADERS } from "./pages.js";
+import { clerkPageHeaders, consentPage, errorPage, PAGE_HEADERS } from "./pages.js";
 import type { BrainStore } from "./store.js";
 import { registerWebsite } from "./web.js";
 import type { WebSessionService } from "./websession.js";
@@ -27,6 +29,8 @@ export interface AppOptions {
   sessions?: WebSessionService;
   /** Outbound fetch, for images uploaded from a source URL. */
   fetch?: FetchFn;
+  /** Accounts, and Clerk sign-in when it is configured. */
+  accounts: AccountService;
 }
 
 /** Large enough for an inline base64 image at the default 5 MiB limit, plus JSON overhead. */
@@ -37,7 +41,8 @@ export function createApp(opts: AppOptions): Hono {
   const base = opts.publicUrl.replace(/\/+$/, "");
   const resource = `${base}/mcp`;
   const resourceMetadataUrl = `${base}/.well-known/oauth-protected-resource/mcp`;
-  const { store, oauth } = opts;
+  const { store, oauth, accounts } = opts;
+  const clerkUi = accounts.clerk ? clerkPage(accounts.clerk) : undefined;
   const app = new Hono();
 
   app.use("*", async (c, next) => {
@@ -53,8 +58,17 @@ export function createApp(opts: AppOptions): Hono {
 
   // ------------------------------------------------------------------ discovery
 
+  // The sign-in helper for pages that use Clerk. Static, so it can be cached briefly.
+  app.get("/assets/clerk-signin.js", (c) =>
+    c.body(CLERK_SIGNIN_JS, 200, {
+      "content-type": "text/javascript; charset=utf-8",
+      "cache-control": "public, max-age=300",
+      "x-content-type-options": "nosniff",
+    }),
+  );
+
   if (opts.sessions) {
-    registerWebsite(app, { base, store, sessions: opts.sessions });
+    registerWebsite(app, { base, store, sessions: opts.sessions, accounts });
   } else {
     app.get("/", (c) =>
       c.text(`Agent Brain ${SERVER_VERSION}\n\nThis is an MCP server. Connect your agent to ${resource}\n`),
@@ -116,14 +130,17 @@ export function createApp(opts: AppOptions): Hono {
     return new Response(null, { status: 302, headers: { location: url.toString(), "cache-control": "no-store" } });
   };
 
-  const html = (body: string, status = 200) => new Response(body, { status, headers: PAGE_HEADERS });
+  const html = (body: string, status = 200) =>
+    new Response(body, { status, headers: clerkUi ? clerkPageHeaders(clerkUi) : PAGE_HEADERS });
 
   app.get("/authorize", async (c) => {
     const params = new URL(c.req.url).searchParams;
     try {
       await oauth.resolveClient(params.get("client_id"));
       const { request, clientName, scopes } = oauth.startAuthorization(params);
-      return html(consentPage({ requestId: request.id, clientName, redirectHost: new URL(request.redirect_uri).host || request.redirect_uri, scopes }));
+      return html(
+        consentPage({ requestId: request.id, clientName, redirectHost: new URL(request.redirect_uri).host || request.redirect_uri, scopes, clerk: clerkUi }),
+      );
     } catch (e) {
       const err = e as OAuthError & { redirectUri?: string; state?: string | null };
       if (err instanceof OAuthError && err.redirectUri) {
@@ -142,6 +159,32 @@ export function createApp(opts: AppOptions): Hono {
     if (form.decision !== "allow") {
       oauth.consumeRequest(request.id);
       return redirectWith(request.redirect_uri, { error: "access_denied", error_description: "The user denied access.", state: request.state, iss: base });
+    }
+    const retry = (status: number, error: string, email?: string) => {
+      const client = oauth.getClient(request.client_id);
+      return html(
+        consentPage({
+          requestId: request.id,
+          clientName: client?.client_name ?? "An unnamed client",
+          redirectHost: new URL(request.redirect_uri).host || request.redirect_uri,
+          scopes: request.scopes.split(" ") as Scope[],
+          error,
+          email,
+          clerk: clerkUi,
+        }),
+        status,
+      );
+    };
+    if (accounts.clerk) {
+      const result = await accounts.signInWithClerk(String(form.clerk_token ?? ""));
+      if (!result.ok) {
+        if (!oauth.recordFailedAttempt(request.id)) {
+          return html(errorPage("Too many attempts", "Sign-in failed too many times. Start again from your agent."), 429);
+        }
+        return retry(result.reason === "unavailable" ? 503 : 401, CLERK_SIGN_IN_ERRORS[result.reason]);
+      }
+      const code = await oauth.issueCode(request, result.userId);
+      return redirectWith(request.redirect_uri, { code, state: request.state, iss: base });
     }
     const email = String(form.email ?? "");
     const password = String(form.password ?? "");
@@ -239,6 +282,9 @@ export function createApp(opts: AppOptions): Hono {
     if (!header?.startsWith("Bearer ")) return unauthorized();
     const info = await oauth.verifyAccessToken(header.slice(7).trim());
     if (!info) return unauthorized("invalid_token", "The access token is invalid, expired or revoked.");
+    if (!(await accounts.isActive(info.userId))) {
+      return unauthorized("invalid_token", "This Agent Brain account has been removed or suspended.");
+    }
     if (info.resource && info.resource.replace(/\/+$/, "") !== resource && info.resource.replace(/\/+$/, "") !== base) {
       return unauthorized("invalid_token", "The access token was issued for a different resource.");
     }
@@ -269,7 +315,7 @@ export function createApp(opts: AppOptions): Hono {
 
   const linkError = (e: unknown) => {
     if (e instanceof BrainError) {
-      const status = e.code === "not_found" ? 404 : e.code === "limit_exceeded" ? 413 : e.code === "brain_closed" ? 410 : 400;
+      const status = e.code === "not_found" ? 404 : e.code === "forbidden" ? 403 : e.code === "limit_exceeded" ? 413 : e.code === "brain_closed" ? 410 : 400;
       return new Response(JSON.stringify(e.toJSON()), { status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
     }
     throw e;

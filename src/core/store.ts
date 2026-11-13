@@ -3,6 +3,12 @@ import { formatReference, newDocumentId, newOpaqueId, parseReference, type Parse
 import { detectImage, extensionFor, IMAGE_TYPES } from "./images.js";
 import { one, toBytes, type Sql, type SqlValue } from "./sql.js";
 
+/** Errors for references and project tokens that exist but belong to another account. */
+export const FORBIDDEN_BRAIN =
+  "This brain belongs to another Agent Brain account. You are signed in to a different account, and brains cannot be shared between accounts.";
+export const FORBIDDEN_PROJECT =
+  "This project belongs to another Agent Brain account. You are signed in to a different account, and projects cannot be shared between accounts.";
+
 export interface Limits {
   /** Maximum UTF-8 size of one document body, in bytes. */
   documentBytes: number;
@@ -213,13 +219,16 @@ export class BrainStore {
     return this.sql.transaction(() => {
       const existing = one<{ id: string; name: string }>(
         this.sql,
-        `SELECT id, name FROM projects WHERE user_id = ? AND name_key = ?`,
+        `SELECT id, name FROM projects WHERE user_id = ? AND (name_key = ? OR id = ?) ORDER BY name_key = ? DESC LIMIT 1`,
         userId,
+        key,
+        key,
         key,
       );
       if (existing) {
         return { name: existing.name, token: existing.id, created: false, brains: this.listBrains(userId, existing.id) };
       }
+      this.assertNotOthersProject(userId, key);
       if (!create) throw new BrainError("not_found", `No project named "${name.trim()}" exists.`);
       const id = newOpaqueId();
       this.sql.run(
@@ -254,7 +263,10 @@ export class BrainStore {
       key,
       project.trim().toLowerCase(),
     );
-    if (!row) throw new BrainError("not_found", `No project named "${project.trim()}" exists. Open it first.`);
+    if (!row) {
+      this.assertNotOthersProject(userId, project.trim().toLowerCase());
+      throw new BrainError("not_found", `No project named "${project.trim()}" exists. Open it first.`);
+    }
     return row;
   }
 
@@ -847,7 +859,10 @@ export class BrainStore {
   /** One project and all its brains, active and closed. Missing and other users' projects are not found. */
   projectWithBrains(userId: string, token: string): { project: ProjectOverview; brains: BrainListing[] } {
     const project = this.projectsOverview(userId).find((p) => p.token === token.trim().toLowerCase());
-    if (!project) throw new BrainError("not_found", "No project with that token is available to you.");
+    if (!project) {
+      this.assertNotOthersProject(userId, token.trim().toLowerCase());
+      throw new BrainError("not_found", "No project with that token is available to you.");
+    }
     const rows = this.sql.all<BrainRow & { docs: number; bytes: number }>(
       `SELECT b.*, p.name AS project_name,
          (SELECT COUNT(*) FROM documents d WHERE d.brain_id = b.id AND d.deleted = 0) AS docs,
@@ -908,7 +923,15 @@ export class BrainStore {
     return parsed;
   }
 
-  /** Load a brain the user owns. Other users' brains are indistinguishable from missing ones. */
+  /** Throw forbidden when a project token belongs to another account. */
+  private assertNotOthersProject(userId: string, token: string): void {
+    const other = one<{ user_id: string }>(this.sql, `SELECT user_id FROM projects WHERE id = ?`, token);
+    if (other && other.user_id !== userId) {
+      throw new BrainError("forbidden", FORBIDDEN_PROJECT);
+    }
+  }
+
+  /** Load a brain the user owns. Another account's brain is forbidden; a missing one is not found. */
   private loadBrain(userId: string, ref: ParsedReference): BrainRow {
     const row = one<BrainRow>(
       this.sql,
@@ -917,7 +940,13 @@ export class BrainStore {
       userId,
     );
     // The project part must match too, so a reference cannot be re-pointed at another project.
-    if (!row || (ref.projectId && row.project_id !== ref.projectId)) throw new BrainError("not_found", "No brain with that reference is available to you.");
+    if (!row || (ref.projectId && row.project_id !== ref.projectId)) {
+      const other = one<{ user_id: string; project_id: string }>(this.sql, `SELECT user_id, project_id FROM brains WHERE id = ?`, ref.brainId);
+      if (other && other.user_id !== userId && (!ref.projectId || other.project_id === ref.projectId)) {
+        throw new BrainError("forbidden", FORBIDDEN_BRAIN);
+      }
+      throw new BrainError("not_found", "No brain with that reference is available to you.");
+    }
     return row;
   }
 

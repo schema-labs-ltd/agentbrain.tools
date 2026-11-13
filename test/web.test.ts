@@ -170,7 +170,14 @@ describe("website", () => {
     const cookie = await session(t);
     const otherId = t.store.upsertUser("other@example.com", await hashPassword("another long password"));
     const other = t.store.createBrain({ userId: otherId, clientId: "c2" }, { project: "Secret" });
-    for (const path of [`/projects/${other.project.token}`, pathOf(other.reference), "/projects/nope", "/brains/a/b"]) {
+    for (const path of [`/projects/${other.project.token}`, pathOf(other.reference)]) {
+      const res = await t.fetch(`${BASE}${path}`, { headers: { cookie } });
+      expect(res.status).toBe(403);
+      const body = await res.text();
+      expect(body).toContain("belongs to another Agent Brain account");
+      expect(body).not.toContain("Secret");
+    }
+    for (const path of ["/projects/nope", "/brains/a/b"]) {
       expect((await t.fetch(`${BASE}${path}`, { headers: { cookie } })).status).toBe(404);
     }
     expect(await (await t.fetch(`${BASE}/`, { headers: { cookie } })).text()).not.toContain("Secret");
