@@ -1,5 +1,7 @@
 import type { Hono } from "hono";
+import { AccountService } from "./accounts.js";
 import { createApp } from "./app.js";
+import { ClerkAuth } from "./clerk.js";
 import { hashPassword, verifyPassword } from "./crypto.js";
 import { EventService, type EventOptions } from "./events.js";
 import { OAuthService, type FetchFn } from "./oauth.js";
@@ -13,6 +15,11 @@ export interface InstanceConfig {
   PUBLIC_URL?: string;
   OWNER_EMAIL?: string;
   OWNER_PASSWORD?: string;
+  /** Clerk sign-in. Set both keys to let people sign in through Clerk instead of the owner password. */
+  CLERK_PUBLISHABLE_KEY?: string;
+  CLERK_SECRET_KEY?: string;
+  /** Clerk Backend API base URL, for tests. Defaults to https://api.clerk.com. */
+  CLERK_API_URL?: string;
   LIMIT_DOCUMENT_BYTES?: string;
   LIMIT_BRAIN_DOCUMENTS?: string;
   LIMIT_BRAIN_BYTES?: string;
@@ -45,15 +52,28 @@ export function limitsFrom(config: InstanceConfig): Limits {
  * Make sure the owner account from OWNER_EMAIL / OWNER_PASSWORD exists and
  * matches the configured password. Changing the secret and restarting resets it.
  */
-export async function ensureOwner(store: BrainStore, email: string | undefined, password: string | undefined): Promise<void> {
+export async function ensureOwner(store: BrainStore, email: string | undefined, password: string | undefined, clerk = false): Promise<void> {
   if (!email || !password) {
-    console.warn("OWNER_EMAIL and OWNER_PASSWORD are not set: nobody can sign in.");
+    if (!clerk) console.warn("OWNER_EMAIL and OWNER_PASSWORD are not set: nobody can sign in.");
     return;
   }
   if (password.length < 12) throw new Error("OWNER_PASSWORD must be at least 12 characters.");
   const existing = store.findUserByEmail(email);
   if (existing && (await verifyPassword(password, existing.password_hash))) return;
   store.upsertUser(email, await hashPassword(password));
+}
+
+/** Clerk sign-in when both keys are set; neither means password sign-in for the owner. */
+export function clerkFrom(config: InstanceConfig, fetchFn: FetchFn, now: () => number): ClerkAuth | undefined {
+  const pk = config.CLERK_PUBLISHABLE_KEY?.trim();
+  const sk = config.CLERK_SECRET_KEY?.trim();
+  if (!pk && !sk) return undefined;
+  if (!pk || !sk) throw new Error("Set both CLERK_PUBLISHABLE_KEY and CLERK_SECRET_KEY, or neither.");
+  return new ClerkAuth(
+    { publishableKey: pk, secretKey: sk, apiUrl: config.CLERK_API_URL, authorizedParties: [new URL(config.PUBLIC_URL!).origin] },
+    fetchFn,
+    now,
+  );
 }
 
 export interface InstanceDeps {
@@ -69,19 +89,21 @@ export function createInstance(
   sql: Sql,
   config: InstanceConfig,
   deps: InstanceDeps = {},
-): { app: Hono; store: BrainStore; oauth: OAuthService; events: EventService } {
+): { app: Hono; store: BrainStore; oauth: OAuthService; events: EventService; accounts: AccountService } {
   if (!config.PUBLIC_URL) throw new Error("PUBLIC_URL must be set to the server's public base URL.");
   migrate(sql);
   const now = deps.now ?? Date.now;
   const store = new BrainStore(sql, limitsFrom(config), now, config.PUBLIC_URL.replace(/\/+$/, ""));
   const oauth = new OAuthService(sql, now, deps.fetch);
   const events = new EventService(sql, store, deps.fetch, now, deps.events);
+  const clerk = clerkFrom(config, deps.fetch ?? ((input, init) => fetch(input, init)), now);
+  const accounts = new AccountService(sql, clerk, now);
   let setup: Promise<void> | undefined;
-  const ready = () => (setup ??= ensureOwner(store, config.OWNER_EMAIL, config.OWNER_PASSWORD).catch((e) => {
+  const ready = () => (setup ??= ensureOwner(store, config.OWNER_EMAIL, config.OWNER_PASSWORD, !!clerk).catch((e) => {
     setup = undefined;
     throw e;
   }));
   const sessions = new WebSessionService(sql, now);
-  const app = createApp({ publicUrl: config.PUBLIC_URL, store, oauth, events, sessions, ready, afterMcpRequest: deps.afterMcpRequest, fetch: deps.fetch });
-  return { app, store, oauth, events };
+  const app = createApp({ publicUrl: config.PUBLIC_URL, store, oauth, events, sessions, ready, afterMcpRequest: deps.afterMcpRequest, fetch: deps.fetch, accounts });
+  return { app, store, oauth, events, accounts };
 }

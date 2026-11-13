@@ -1,3 +1,4 @@
+import { clerkCsp, clerkScripts, type ClerkPage } from "./clerkui.js";
 import { SCOPES, type Scope } from "./oauth.js";
 
 function esc(s: string): string {
@@ -22,6 +23,13 @@ button.primary { background:var(--accent); border-color:var(--accent); color:#ff
 @media (prefers-color-scheme: dark) { button.primary { color:#10201b; } }
 .error { color:var(--err); margin-bottom:12px; }
 .client { font-weight:600; color:var(--fg); }
+.clerk { display:flex; justify-content:center; margin:8px 0 16px; }
+.clerk:empty { min-height:120px; }
+.clerk[hidden], [hidden] { display:none !important; }
+.who { color:var(--fg); }
+button.link { flex:none; padding:0; border:0; background:none; color:var(--accent); font-weight:400; text-decoration:underline; }
+button:disabled { opacity:.5; cursor:not-allowed; }
+main:has(.clerk) { max-width:480px; }
 `;
 
 export const PAGE_HEADERS = {
@@ -36,15 +44,42 @@ function layout(title: string, body: string): string {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${esc(title)}</title><style>${STYLE}</style></head><body><main>${body}</main></body></html>`;
 }
 
-export function consentPage(opts: { requestId: string; clientName: string; redirectHost: string; scopes: Scope[]; error?: string; email?: string }): string {
+export function consentPage(opts: {
+  requestId: string;
+  clientName: string;
+  redirectHost: string;
+  scopes: Scope[];
+  error?: string;
+  email?: string;
+  clerk?: ClerkPage;
+}): string {
   const scopes = opts.scopes.map((s) => `<li>${esc(SCOPES[s])}</li>`).join("");
-  return layout(
-    "Sign in to Agent Brain",
-    `<h1>Sign in to Agent Brain</h1>
+  const intro = `<h1>Sign in to Agent Brain</h1>
 <p><span class="client">${esc(opts.clientName)}</span> wants to connect to your Agent Brain and will return to ${esc(opts.redirectHost)}.</p>
 <p>It will be able to:</p>
 <ul>${scopes}</ul>
-${opts.error ? `<div class="error" role="alert">${esc(opts.error)}</div>` : ""}
+${opts.error ? `<div class="error" role="alert">${esc(opts.error)}</div>` : ""}`;
+  if (opts.clerk) {
+    return layout(
+      "Sign in to Agent Brain",
+      `${intro}
+<div class="error" id="clerk-status" role="alert" hidden></div>
+<div id="clerk-mount" class="clerk"></div>
+<form method="post" action="/authorize" id="consent">
+<input type="hidden" name="request_id" value="${esc(opts.requestId)}">
+<input type="hidden" name="clerk_token" value="">
+<p class="who" hidden>Signed in as <span class="client" id="clerk-who"></span>. <button type="button" class="link" id="clerk-other">Use another account</button></p>
+<div class="row">
+<button type="submit" name="decision" value="deny" formnovalidate>Deny</button>
+<button type="submit" name="decision" value="allow" class="primary" disabled>Allow</button>
+</div>
+</form>
+${clerkScripts(opts.clerk, { mode: "consent", form: "consent" })}`,
+    );
+  }
+  return layout(
+    "Sign in to Agent Brain",
+    `${intro}
 <form method="post" action="/authorize">
 <input type="hidden" name="request_id" value="${esc(opts.requestId)}">
 <label for="email">Email</label>
@@ -57,6 +92,11 @@ ${opts.error ? `<div class="error" role="alert">${esc(opts.error)}</div>` : ""}
 </div>
 </form>`,
   );
+}
+
+/** Headers for the consent page when it runs Clerk's sign-in. No form-action: Allow redirects to the client. */
+export function clerkPageHeaders(clerk: ClerkPage): Record<string, string> {
+  return { ...PAGE_HEADERS, "content-security-policy": clerkCsp(clerk.frontendApi) };
 }
 
 export function errorPage(title: string, message: string): string {

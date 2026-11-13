@@ -217,6 +217,13 @@ const MIGRATIONS: string[][] = [
     `UPDATE images SET public_token = lower(hex(randomblob(16))) WHERE public_token IS NULL`,
     `CREATE UNIQUE INDEX images_public_token ON images (public_token)`,
   ],
+  [
+    // Accounts signed in through Clerk. Existing users (the original owner) are linked on first Clerk sign-in by verified email.
+    `ALTER TABLE users ADD COLUMN clerk_user_id TEXT`,
+    `ALTER TABLE users ADD COLUMN clerk_checked_at INTEGER`,
+    `ALTER TABLE users ADD COLUMN disabled INTEGER NOT NULL DEFAULT 0`,
+    `CREATE UNIQUE INDEX users_clerk_user_id ON users (clerk_user_id)`,
+  ],
 ];
 
 export function migrate(sql: Sql): void {

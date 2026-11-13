@@ -123,7 +123,7 @@ describe("image store", () => {
   it("hides images from other users and deletes them on close", () => {
     const { store, sql, a1, b, ref } = setup();
     const id = (store.createImage(a1, ref, { title: "x", data: PNG_1X1 }).image as { id: string }).id;
-    expect(code(() => store.readImage(b.userId, ref, id))).toBe("not_found");
+    expect(code(() => store.readImage(b.userId, ref, id))).toBe("forbidden");
     const closed = store.closeBrain(a1, ref, true);
     expect(closed.export!.images).toEqual([expect.objectContaining({ id, title: "x", mimeType: "image/png" })]);
     expect(sql.all(`SELECT COUNT(*) AS n FROM image_chunks`)[0]).toEqual({ n: 0 });

@@ -1,3 +1,4 @@
+import { clerkScripts, type ClerkPage } from "./clerkui.js";
 import { escapeHtml as esc } from "./markdown.js";
 import type { ActivityItem, BrainIndex, BrainListing, BrainSummary, DocumentSummary, ImageSummary, ProjectOverview } from "./store.js";
 
@@ -61,6 +62,11 @@ details.source pre { margin:0; border-radius:0 0 12px 12px; border:0; border-top
 .history .cur { font-weight:700; }
 .history .sum { color:var(--muted); display:block; }
 .card { max-width:420px; margin:40px auto 0; background:var(--card); border:1px solid var(--line); border-radius:12px; padding:24px; }
+.card:has(.clerk) { max-width:480px; }
+.clerk { display:flex; justify-content:center; margin:8px 0 16px; }
+.clerk:empty { min-height:120px; }
+.clerk[hidden], [hidden] { display:none !important; }
+.muted { color:var(--muted); font-size:14px; }
 .card label { display:block; font-size:14px; font-weight:600; margin:12px 0 4px; }
 .card input { width:100%; padding:10px 12px; border:1px solid var(--line); border-radius:8px; background:transparent; color:inherit; font:inherit; font-size:16px; }
 .card .btn { width:100%; margin-top:20px; }
@@ -176,7 +182,23 @@ export function landingPage(mcpUrl: string): string {
   );
 }
 
-export function loginPage(opts: { next: string; error?: string; email?: string }): string {
+export function loginPage(opts: { next: string; error?: string; email?: string; clerk?: ClerkPage; signedOut?: boolean }): string {
+  if (opts.clerk) {
+    return page(
+      "Sign in",
+      `<div class="card"><h1>Sign in</h1><p class="lead">Browse your projects, tasks and documents. The website is read-only.</p>
+${opts.error ? `<p class="error" role="alert">${esc(opts.error)}</p>` : ""}
+<p class="error" id="clerk-status" role="alert" hidden></p>
+<div id="clerk-mount" class="clerk"></div>
+<form method="post" action="/login" id="login">
+<input type="hidden" name="next" value="${esc(opts.next)}">
+<input type="hidden" name="clerk_token" value="">
+<p class="muted" hidden>Signing in as <strong id="clerk-who"></strong>…</p>
+</form>
+<p class="muted">Accounts are by invitation. Ask the person who runs this Agent Brain to add you.</p>
+${clerkScripts(opts.clerk, { mode: "login", form: "login", signOut: opts.signedOut })}</div>`,
+    );
+  }
   return page(
     "Sign in",
     `<div class="card"><h1>Sign in</h1><p class="lead">Browse your projects, tasks and documents. The website is read-only.</p>

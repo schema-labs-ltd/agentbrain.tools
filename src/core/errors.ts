@@ -1,5 +1,6 @@
 export type ErrorCode =
   | "not_found"
+  | "forbidden"
   | "invalid_request"
   | "conflict"
   | "limit_exceeded"

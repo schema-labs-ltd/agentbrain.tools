@@ -87,13 +87,49 @@ describe("projects", () => {
 });
 
 describe("access", () => {
-  it("does not reveal another user's brain to someone holding its reference", () => {
+  it("refuses another user's brain with a clear forbidden error", () => {
     const { store, a1, bob, b } = setup();
     const brain = store.createBrain(a1, { project: "Secret" });
-    expect(code(() => store.getIndex(bob, brain.reference))).toBe("not_found");
-    expect(code(() => store.createDocument(b, brain.reference, { title: "x", markdown: "y" }))).toBe("not_found");
-    expect(code(() => store.closeBrain(b, brain.reference, false))).toBe("not_found");
+    expect(code(() => store.getIndex(bob, brain.reference))).toBe("forbidden");
+    expect(code(() => store.createDocument(b, brain.reference, { title: "x", markdown: "y" }))).toBe("forbidden");
+    expect(code(() => store.closeBrain(b, brain.reference, false))).toBe("forbidden");
+    expect(code(() => store.readDocuments(bob, brain.reference, ["x"]))).toBe("forbidden");
+    let message = "";
+    try {
+      store.getIndex(bob, brain.reference);
+    } catch (e) {
+      message = (e as Error).message;
+    }
+    expect(message).toMatch(/belongs to another Agent Brain account/);
     expect(store.listBrains(bob)).toHaveLength(0);
+    // Nothing of the other account is changed or revealed.
+    expect(store.getIndex(a1.userId, brain.reference).documents).toHaveLength(0);
+  });
+
+  it("refuses another user's project token, and still reports missing things as not found", () => {
+    const { store, a1, bob, b } = setup();
+    const brain = store.createBrain(a1, { project: "Secret" });
+    const token = brain.project.token;
+    expect(code(() => store.listBrainsForProject(bob, token))).toBe("forbidden");
+    expect(code(() => store.createBrain(b, { project: token }))).toBe("forbidden");
+    expect(code(() => store.projectWithBrains(bob, token))).toBe("forbidden");
+    expect(store.listProjects(bob)).toHaveLength(0);
+    // Unknown references, tokens and names are still not found.
+    const fake = brain.reference.replace(/.$/, (c) => (c === "a" ? "b" : "a"));
+    expect(code(() => store.getIndex(bob, fake))).toBe("not_found");
+    expect(code(() => store.listBrainsForProject(bob, "Nope"))).toBe("not_found");
+    // A reference re-pointed at another project is not found, not forbidden.
+    const mine = store.createBrain(b, { project: "Mine" });
+    const repointed = `agentBrain:${mine.project.token}.${brain.reference.split(".")[1]}`;
+    expect(code(() => store.getIndex(bob, repointed))).toBe("not_found");
+  });
+
+  it("opens a project by its token as well as its name", () => {
+    const { store, a1 } = setup();
+    const brain = store.createBrain(a1, { project: "Named" });
+    const again = store.createBrain(a1, { project: brain.project.token });
+    expect(again.project).toEqual(brain.project);
+    expect(store.listProjects(a1.userId)).toHaveLength(1);
   });
 });
 
