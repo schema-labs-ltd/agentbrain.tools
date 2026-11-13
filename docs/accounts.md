@@ -29,6 +29,6 @@ To remove someone, delete, ban or lock them in Clerk. Agent Brain re-checks each
    ```
 
    In Docker, set the same two variables. Set both or neither.
-3. Keep `OWNER_EMAIL` set to the owner's email (and invite that email in Clerk) so existing data is linked to them on first sign-in. `OWNER_PASSWORD` is no longer used for sign-in once Clerk is on.
+3. Set `OWNER_EMAIL` to the email the owner uses in Clerk (and add that email in Clerk) so existing data is linked to them on first sign-in. Changing `OWNER_EMAIL` moves the existing owner account to the new address rather than starting an empty one. `OWNER_PASSWORD` is no longer used for sign-in once Clerk is on.
 
 The sign-in pages load Clerk's browser SDK from the instance's Frontend API, with a Content Security Policy limited to Clerk's hosts. Every other page still has no JavaScript.

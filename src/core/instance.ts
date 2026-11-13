@@ -51,6 +51,7 @@ export function limitsFrom(config: InstanceConfig): Limits {
 /**
  * Make sure the owner account from OWNER_EMAIL / OWNER_PASSWORD exists and
  * matches the configured password. Changing the secret and restarting resets it.
+ * Changing OWNER_EMAIL moves the existing owner account (and its data) to the new email.
  */
 export async function ensureOwner(store: BrainStore, email: string | undefined, password: string | undefined, clerk = false): Promise<void> {
   if (!email || !password) {
@@ -58,6 +59,7 @@ export async function ensureOwner(store: BrainStore, email: string | undefined, 
     return;
   }
   if (password.length < 12) throw new Error("OWNER_PASSWORD must be at least 12 characters.");
+  store.moveOwnerEmail(email);
   const existing = store.findUserByEmail(email);
   if (existing && (await verifyPassword(password, existing.password_hash))) return;
   store.upsertUser(email, await hashPassword(password));
