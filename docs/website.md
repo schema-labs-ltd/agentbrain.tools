@@ -12,7 +12,7 @@ Every image also has a public link, `/i/<token>.<ext>`, that anyone can open wit
 - **Documents:** the rendered Markdown, the Markdown source, and the revision history. Older revisions that are still kept can be opened from the history list.
 - **Closed tasks:** listed with their closing time. Closing deletes a brain's documents, so there is nothing else to show.
 
-Nothing on the website changes a brain. The only forms are sign-in and sign-out.
+Nothing on the website changes a brain. The only forms are sign-in, sign-out and the **API keys** page, where you create and revoke keys for agents that cannot sign in through a browser (see [API keys](api-keys.md)).
 
 ## Signing in
 

@@ -224,6 +224,22 @@ const MIGRATIONS: string[][] = [
     `ALTER TABLE users ADD COLUMN disabled INTEGER NOT NULL DEFAULT 0`,
     `CREATE UNIQUE INDEX users_clerk_user_id ON users (clerk_user_id)`,
   ],
+  [
+    // API keys for agents that cannot sign in with OAuth. Only a hash of the key is stored.
+    `CREATE TABLE api_keys (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      key_hash TEXT NOT NULL UNIQUE,
+      hint TEXT NOT NULL,
+      access TEXT NOT NULL,
+      projects TEXT,
+      created_at INTEGER NOT NULL,
+      last_used_at INTEGER,
+      revoked_at INTEGER
+    )`,
+    `CREATE INDEX api_keys_user ON api_keys (user_id)`,
+  ],
 ];
 
 export function migrate(sql: Sql): void {

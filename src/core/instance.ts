@@ -1,5 +1,6 @@
 import type { Hono } from "hono";
 import { AccountService } from "./accounts.js";
+import { ApiKeyService } from "./apikeys.js";
 import { createApp } from "./app.js";
 import { ClerkAuth } from "./clerk.js";
 import { hashPassword, verifyPassword } from "./crypto.js";
@@ -91,7 +92,7 @@ export function createInstance(
   sql: Sql,
   config: InstanceConfig,
   deps: InstanceDeps = {},
-): { app: Hono; store: BrainStore; oauth: OAuthService; events: EventService; accounts: AccountService } {
+): { app: Hono; store: BrainStore; oauth: OAuthService; events: EventService; accounts: AccountService; apiKeys: ApiKeyService } {
   if (!config.PUBLIC_URL) throw new Error("PUBLIC_URL must be set to the server's public base URL.");
   migrate(sql);
   const now = deps.now ?? Date.now;
@@ -106,6 +107,7 @@ export function createInstance(
     throw e;
   }));
   const sessions = new WebSessionService(sql, now);
-  const app = createApp({ publicUrl: config.PUBLIC_URL, store, oauth, events, sessions, ready, afterMcpRequest: deps.afterMcpRequest, fetch: deps.fetch, accounts });
-  return { app, store, oauth, events, accounts };
+  const apiKeys = new ApiKeyService(sql, now);
+  const app = createApp({ publicUrl: config.PUBLIC_URL, store, oauth, events, sessions, ready, afterMcpRequest: deps.afterMcpRequest, fetch: deps.fetch, accounts, apiKeys });
+  return { app, store, oauth, events, accounts, apiKeys };
 }

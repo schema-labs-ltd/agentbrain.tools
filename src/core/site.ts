@@ -1,5 +1,6 @@
 import { clerkScripts, type ClerkPage } from "./clerkui.js";
 import { escapeHtml as esc } from "./markdown.js";
+import type { ApiKeySummary } from "./apikeys.js";
 import type { ActivityItem, BrainIndex, BrainListing, BrainSummary, DocumentSummary, ImageSummary, ProjectOverview } from "./store.js";
 
 /** HTML for the read-only website. No JavaScript: everything is server-rendered. */
@@ -79,6 +80,24 @@ details.source pre { margin:0; border-radius:0 0 12px 12px; border:0; border-top
 .figure { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:12px; margin:0 0 16px; text-align:center; }
 .figure img { max-width:100%; height:auto; border-radius:6px; background:var(--soft); }
 .md a.brain-image { display:inline-block; }
+.navlink { font-size:14px; font-weight:600; color:var(--muted); text-decoration:none; white-space:nowrap; }
+.navlink:hover { color:var(--accent); }
+.panel { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px; margin:0 0 16px; }
+.panel h2 { font-size:18px; margin:0 0 4px; }
+.panel label.field { display:block; font-size:14px; font-weight:600; margin:14px 0 4px; }
+.panel input[type=text] { width:100%; padding:10px 12px; border:1px solid var(--line); border-radius:8px; background:transparent; color:inherit; font:inherit; font-size:16px; }
+.panel fieldset { border:0; padding:0; margin:14px 0 0; }
+.panel legend { font-size:14px; font-weight:600; padding:0; margin:0 0 4px; }
+.choice { display:flex; align-items:flex-start; gap:8px; padding:4px 0; font-size:15px; }
+.choice input { margin-top:5px; }
+.projects-pick { max-height:220px; overflow:auto; border:1px solid var(--line); border-radius:8px; padding:6px 10px; margin-top:6px; }
+.panel .btn.primary { margin-top:16px; }
+.keyrow { display:flex; flex-wrap:wrap; align-items:center; gap:8px 16px; padding:14px 16px; }
+.keyrow .grow { flex:1 1 260px; min-width:0; }
+.keyrow form { margin:0; }
+.btn.danger { color:var(--err); border-color:var(--err); }
+.secret { font-size:14px; }
+pre.example { white-space:pre-wrap; word-break:break-all; font-size:12.5px; margin:0 0 16px; }
 
 /* Rendered Markdown */
 .md { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:20px; font-size:16px; }
@@ -137,7 +156,7 @@ export interface SiteUser {
 
 function page(title: string, body: string, user?: SiteUser): string {
   const header = `<header class="top"><div class="top-in"><a class="brand" href="/">Agent Brain</a>${
-    user ? `<form method="post" action="/logout"><button class="btn" type="submit">Sign out</button></form>` : ""
+    user ? `<a class="navlink" href="/keys">API keys</a><form method="post" action="/logout"><button class="btn" type="submit">Sign out</button></form>` : ""
   }</div></header>`;
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex, nofollow"><meta name="referrer" content="same-origin"><title>${esc(title)} · Agent Brain</title><style>${STYLE}</style></head><body>${header}<main class="wrap">${body}</main></body></html>`;
 }
@@ -228,7 +247,7 @@ export function projectsPage(user: SiteUser, projects: ProjectOverview[]): strin
         )
         .join("")}</ul>`
     : `<p class="empty">No projects yet. Ask an agent to create a brain and it will appear here.</p>`;
-  return page("Projects", `<h1>Projects</h1><p class="lead">Signed in as ${esc(user.email)}. Everything here is read-only.</p>${items}`, user);
+  return page("Projects", `<h1>Projects</h1><p class="lead">Signed in as ${esc(user.email)}. Brains are read-only here: agents make every change.</p>${items}`, user);
 }
 
 export function projectPage(user: SiteUser, project: ProjectOverview, brains: BrainListing[]): string {
@@ -403,6 +422,72 @@ ${i.description ? `<p class="lead">${esc(i.description)}</p>` : ""}
 <p class="lead">Reference it from a document as <code>![${esc(i.title)}](image:${esc(i.id)})</code></p>
 <p class="lead">Public link, for GitHub and other tools (anyone with it can view the image):</p>
 <code class="ref">${esc(i.url)}</code>`,
+    user,
+  );
+}
+
+export interface ApiKeysView {
+  keys: ApiKeySummary[];
+  projects: { token: string; name: string }[];
+  mcpUrl: string;
+  /** The full key, shown only on the page that created it. */
+  created?: { key: string; summary: ApiKeySummary };
+  error?: string;
+  notice?: string;
+}
+
+function accessLabel(k: ApiKeySummary): string {
+  return k.access === "write" ? "Read and write" : "Read-only";
+}
+
+export function apiKeysPage(user: SiteUser, v: ApiKeysView): string {
+  const created = v.created
+    ? `<div class="notice" role="status"><strong>Copy this key now.</strong> It will not be shown again. Anyone with it can act as you within its limits.</div>
+<code class="ref secret" id="new-key">${esc(v.created.key)}</code>
+<p class="muted">Send it as <code>Authorization: Bearer &lt;key&gt;</code> to <code>${esc(v.mcpUrl)}</code>, for example:</p>
+<pre class="example">curl ${esc(v.mcpUrl)} \\
+  -H 'Authorization: Bearer ${esc(v.created.key)}' \\
+  -H 'Content-Type: application/json' \\
+  -H 'Accept: application/json, text/event-stream' \\
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_projects","arguments":{}}}'</pre>`
+    : "";
+  const list = v.keys.length
+    ? `<ul class="list">${v.keys
+        .map(
+          (k) => `<li class="item"><div class="keyrow"><div class="grow"><div class="name">${esc(k.name)}</div><div class="meta"><span><code>${esc(k.hint)}…</code></span><span>${accessLabel(k)}</span><span>${
+            k.projects ? `Only ${k.projects.map((p) => esc(p.name)).join(", ")}` : "All projects"
+          }</span><span>Created ${when(k.createdAt)}</span><span>${k.lastUsedAt ? `Last used ${when(k.lastUsedAt)}` : "Never used"}</span></div></div>
+<form method="post" action="/keys/${esc(k.id)}/revoke"><button class="btn danger" type="submit" aria-label="Revoke ${esc(k.name)}">Revoke</button></form></div></li>`,
+        )
+        .join("")}</ul>`
+    : `<p class="empty">No API keys yet.</p>`;
+  const projects = v.projects.length
+    ? `<div class="projects-pick">${v.projects
+        .map((p) => `<label class="choice"><input type="checkbox" name="projects" value="${esc(p.token)}"><span>${esc(p.name)}</span></label>`)
+        .join("")}</div>`
+    : `<p class="muted">You have no projects yet, so a new key can use every project.</p>`;
+  return page(
+    "API keys",
+    `<h1>API keys</h1><p class="lead">For agents that cannot sign in through a browser, such as a server calling the Claude API. A key acts as you on the MCP server, within the limits you set. Keys cannot close brains.</p>
+${v.notice ? `<div class="notice" role="status">${esc(v.notice)}</div>` : ""}
+${created}
+<form class="panel" method="post" action="/keys">
+<h2>Create a key</h2>
+${v.error ? `<p class="error" role="alert">${esc(v.error)}</p>` : ""}
+<label class="field" for="key-name">Name</label>
+<input id="key-name" name="name" type="text" maxlength="100" required placeholder="Change Request intake agent" autocomplete="off">
+<fieldset><legend>Access</legend>
+<label class="choice"><input type="radio" name="access" value="write" checked><span>Read and write: read, create and change brains and documents</span></label>
+<label class="choice"><input type="radio" name="access" value="read"><span>Read-only</span></label>
+</fieldset>
+<fieldset><legend>Projects</legend>
+<p class="muted" style="margin:0">Leave all unticked to allow every project, including new ones. A key limited to projects cannot create new ones.</p>
+${projects}
+</fieldset>
+<button class="btn primary" type="submit">Create key</button>
+</form>
+<h2 class="section">Your keys</h2>
+${list}`,
     user,
   );
 }

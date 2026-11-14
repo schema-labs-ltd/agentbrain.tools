@@ -19,6 +19,7 @@ Change events are delivered to ChatGPT through MCP events (signed webhooks, buil
 - [Plugins for Claude and ChatGPT](docs/plugins.md): install the Agent Brain server and skill from this repository's marketplace, for example `/plugin install agentbrain --marketplace schema-labs-ltd/agentbrain.tools`.
 - [Change events](docs/events.md): ChatGPT MCP events and the Claude Code channel.
 - [Website](docs/website.md): the read-only browser view, its sign-in and how Markdown is rendered.
+- [API keys](docs/api-keys.md): connect agents that cannot sign in through a browser, such as a server using Anthropic's MCP connector.
 
 The rest of this README is the product plan the implementation follows.
 

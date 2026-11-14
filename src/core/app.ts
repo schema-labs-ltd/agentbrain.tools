@@ -1,6 +1,7 @@
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { Hono, type Context } from "hono";
 import { CLERK_SIGN_IN_ERRORS, type AccountService } from "./accounts.js";
+import { API_KEY_PREFIX, type ApiKeyService } from "./apikeys.js";
 import { CLERK_SIGNIN_JS, clerkPage } from "./clerkui.js";
 import { sha256Hex, verifyPassword } from "./crypto.js";
 import { BrainError } from "./errors.js";
@@ -31,6 +32,8 @@ export interface AppOptions {
   fetch?: FetchFn;
   /** Accounts, and Clerk sign-in when it is configured. */
   accounts: AccountService;
+  /** API keys for agents that cannot complete an OAuth sign-in. Omit to accept only OAuth access tokens. */
+  apiKeys?: ApiKeyService;
 }
 
 /** Large enough for an inline base64 image at the default 5 MiB limit, plus JSON overhead. */
@@ -68,7 +71,7 @@ export function createApp(opts: AppOptions): Hono {
   );
 
   if (opts.sessions) {
-    registerWebsite(app, { base, store, sessions: opts.sessions, accounts });
+    registerWebsite(app, { base, store, sessions: opts.sessions, accounts, apiKeys: opts.apiKeys });
   } else {
     app.get("/", (c) =>
       c.text(`Agent Brain ${SERVER_VERSION}\n\nThis is an MCP server. Connect your agent to ${resource}\n`),
@@ -280,7 +283,25 @@ export function createApp(opts: AppOptions): Hono {
   const authenticate = async (c: Context): Promise<TokenInfo | Response> => {
     const header = c.req.header("authorization");
     if (!header?.startsWith("Bearer ")) return unauthorized();
-    const info = await oauth.verifyAccessToken(header.slice(7).trim());
+    const token = header.slice(7).trim();
+    if (token.startsWith(API_KEY_PREFIX)) {
+      const key = opts.apiKeys ? await opts.apiKeys.verify(token) : undefined;
+      if (!key) return unauthorized("invalid_token", "The API key is invalid or has been revoked.");
+      if (!(await accounts.isActive(key.userId))) {
+        return unauthorized("invalid_token", "This Agent Brain account has been removed or suspended.");
+      }
+      return {
+        userId: key.userId,
+        clientId: `apikey:${key.id}`,
+        clientName: `API key "${key.name}"`,
+        scopes: key.scopes,
+        resource: null,
+        // Keys do not expire; this only fills the MCP SDK's auth info for this request.
+        expiresAt: Date.now() + 60 * 60 * 1000,
+        apiKey: { id: key.id, name: key.name, projects: key.projects },
+      };
+    }
+    const info = await oauth.verifyAccessToken(token);
     if (!info) return unauthorized("invalid_token", "The access token is invalid, expired or revoked.");
     if (!(await accounts.isActive(info.userId))) {
       return unauthorized("invalid_token", "This Agent Brain account has been removed or suspended.");
@@ -296,14 +317,18 @@ export function createApp(opts: AppOptions): Hono {
     if (auth instanceof Response) return auth;
     const length = Number(c.req.header("content-length") ?? 0);
     if (length > MAX_MCP_BODY_BYTES) return c.json({ error: "payload_too_large" }, 413);
-    const server = createMcpServer(store, auth, opts.events, { base, fetch: opts.fetch });
+    const state = { forbidden: false };
+    const server = createMcpServer(store, auth, opts.events, { base, fetch: opts.fetch, state });
     // Stateless: a fresh transport per request, with plain JSON responses.
     const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
     await server.connect(transport);
     try {
-      return await transport.handleRequest(c.req.raw, {
+      const res = await transport.handleRequest(c.req.raw, {
         authInfo: { token: "", clientId: auth.clientId, scopes: auth.scopes, expiresAt: Math.floor(auth.expiresAt / 1000) },
       });
+      // A call outside an API key's limits: keep the JSON-RPC body, which explains the limit, but answer 403.
+      if (state.forbidden) return new Response(res.body, { status: 403, headers: res.headers });
+      return res;
     } finally {
       // Responses are complete JSON bodies, so the server can be released immediately.
       void server.close();

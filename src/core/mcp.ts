@@ -1,5 +1,5 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import { McpError, type CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { sha256Hex } from "./crypto.js";
 import type { EventService } from "./events.js";
@@ -112,6 +112,8 @@ export interface McpOptions {
   base: string;
   /** Outbound fetch for source_url uploads. */
   fetch?: FetchFn;
+  /** Set to true when a call was refused by an API key's limits, so the HTTP response can be a 403. */
+  state?: { forbidden: boolean };
 }
 
 function ok(value: unknown): CallToolResult {
@@ -126,10 +128,46 @@ function fail(error: unknown): CallToolResult {
   return { isError: true, content: [{ type: "text", text: JSON.stringify({ error: { code: "internal_error", message: "Unexpected server error." } }) }] };
 }
 
-function requireScope(auth: TokenInfo, scope: Scope): void {
-  if (!auth.scopes.includes(scope)) {
-    throw new BrainError("insufficient_scope", `This connection was not granted the ${scope} permission.`, { required: scope });
+/** A call outside an API key's limits. Returned as a forbidden tool error inside an HTTP 403. */
+export class KeyLimitError extends BrainError {
+  constructor(message: string, details: Record<string, unknown> = {}) {
+    super("forbidden", message, { limit: "api_key", ...details });
   }
+}
+
+function requireScope(auth: TokenInfo, scope: Scope): void {
+  if (auth.scopes.includes(scope)) return;
+  if (auth.apiKey) {
+    throw new KeyLimitError(
+      scope === "brain:close"
+        ? `API keys cannot close brains, because closing permanently deletes a brain. Ask the user to close it from an agent signed in with OAuth.`
+        : `The API key "${auth.apiKey.name}" is read-only, so it cannot make changes. Ask the user for a read and write key.`,
+      { required: scope },
+    );
+  }
+  throw new BrainError("insufficient_scope", `This connection was not granted the ${scope} permission.`, { required: scope });
+}
+
+/** Project limits for API keys. OAuth connections and unrestricted keys pass every check. */
+function projectGate(store: BrainStore, auth: TokenInfo) {
+  const allowed = auth.apiKey?.projects ? new Set(auth.apiKey.projects) : undefined;
+  const refuse = (what: string) =>
+    new KeyLimitError(`The API key "${auth.apiKey!.name}" is limited to ${allowed!.size === 1 ? "one project" : `${allowed!.size} projects`} and ${what}. Use list_projects to see the projects it can use.`, {
+      allowedProjects: [...allowed!],
+    });
+  return {
+    limited: !!allowed,
+    allows: (token: string) => !allowed || allowed.has(token),
+    reference(reference: string): void {
+      if (!allowed) return;
+      if (!allowed.has(store.projectOfReference(auth.userId, reference))) throw refuse("this brain is in another project");
+    },
+    project(project: string): void {
+      if (!allowed) return;
+      const token = store.findProjectToken(auth.userId, project);
+      if (!token || !allowed.has(token)) throw refuse(`cannot use or create the project "${project.trim()}"`);
+    },
+  };
 }
 
 /** Build an MCP server bound to one authenticated request. */
@@ -137,16 +175,26 @@ export function createMcpServer(store: BrainStore, auth: TokenInfo, events?: Eve
   const fetchFn: FetchFn = opts.fetch ?? ((input, init) => fetch(input, init));
   const server = new McpServer({ name: "agent-brain", version: SERVER_VERSION }, { instructions: SERVER_INSTRUCTIONS });
   const actor: Actor = { userId: auth.userId, clientId: auth.clientId, clientName: auth.clientName };
-  if (events) registerEvents(server, auth, events);
+  const gate = projectGate(store, auth);
+  if (events) registerEvents(server, auth, events, gate);
 
+  const failed = (error: unknown): CallToolResult => {
+    if (error instanceof KeyLimitError && opts.state) opts.state.forbidden = true;
+    return fail(error);
+  };
+
+  /** Check the scope, then any project limit on the reference or project argument, then run the tool. */
   const run =
     <A>(scope: Scope, fn: (args: A) => unknown | Promise<unknown>) =>
     async (args: A): Promise<CallToolResult> => {
       try {
         requireScope(auth, scope);
+        const a = (args ?? {}) as { reference?: unknown; project?: unknown };
+        if (typeof a.reference === "string") gate.reference(a.reference);
+        if (typeof a.project === "string") gate.project(a.project);
         return ok(await fn(args));
       } catch (error) {
-        return fail(error);
+        return failed(error);
       }
     };
 
@@ -192,13 +240,16 @@ export function createMcpServer(store: BrainStore, auth: TokenInfo, events?: Eve
         "Find one of the user's projects by name, creating it if it does not exist (names are matched case-insensitively). Returns the project's stable token and its active brains.",
       inputSchema: { name: z.string().min(1).max(200).describe('The project name, for example "AFX Markets".') },
     },
-    run("brain:read", ({ name }: { name: string }) => store.openProject(auth.userId, name, auth.scopes.includes("brain:write"))),
+    run("brain:read", ({ name }: { name: string }) => {
+      gate.project(name);
+      return store.openProject(auth.userId, name, auth.scopes.includes("brain:write"));
+    }),
   );
 
   server.registerTool(
     "list_projects",
     { title: "List projects", description: "List the user's projects with their tokens and number of active brains.", inputSchema: {} },
-    run("brain:read", () => ({ projects: store.listProjects(auth.userId) })),
+    run("brain:read", () => ({ projects: store.listProjects(auth.userId).filter((p) => gate.allows(p.token)) })),
   );
 
   server.registerTool(
@@ -209,7 +260,7 @@ export function createMcpServer(store: BrainStore, auth: TokenInfo, events?: Eve
       inputSchema: { project: z.string().optional().describe("Project name or token.") },
     },
     run("brain:read", ({ project }: { project?: string }) => ({
-      brains: project ? store.listBrainsForProject(auth.userId, project) : store.listBrains(auth.userId),
+      brains: project ? store.listBrainsForProject(auth.userId, project) : store.listBrains(auth.userId).filter((b) => gate.allows(b.project.token)),
     })),
   );
 
@@ -472,6 +523,7 @@ export function createMcpServer(store: BrainStore, auth: TokenInfo, events?: Eve
     async (args: { reference: string; image_id: string; as?: "image" | "url" }): Promise<CallToolResult> => {
       try {
         requireScope(auth, "brain:read");
+        gate.reference(args.reference);
         if (args.as === "url") {
           const token = newSecret();
           const link = store.createDownloadLink(auth.userId, args.reference, args.image_id, await sha256Hex(token));
@@ -485,7 +537,7 @@ export function createMcpServer(store: BrainStore, auth: TokenInfo, events?: Eve
           ],
         };
       } catch (error) {
-        return fail(error);
+        return failed(error);
       }
     },
   );
@@ -541,7 +593,7 @@ const paramsSchema = z.record(z.string(), z.unknown()).optional();
  * The MCP events extension (events/list, events/subscribe, events/unsubscribe)
  * with webhook delivery, which ChatGPT uses to start tasks when something changes.
  */
-function registerEvents(server: McpServer, auth: TokenInfo, events: EventService): void {
+function registerEvents(server: McpServer, auth: TokenInfo, events: EventService, gate: ReturnType<typeof projectGate>): void {
   // "events" is an extension capability that the SDK's types do not know yet.
   server.server.registerCapabilities({ events: {} } as Record<string, unknown>);
   const principal = { userId: auth.userId, clientId: auth.clientId, canRead: auth.scopes.includes("brain:read") };
@@ -549,6 +601,15 @@ function registerEvents(server: McpServer, auth: TokenInfo, events: EventService
     events.list(req.params?.cursor),
   );
   server.server.setRequestHandler(z.object({ method: z.literal("events/subscribe"), params: paramsSchema }), async (req) => {
+    const ref = (req.params?.arguments as { reference?: unknown } | undefined)?.reference;
+    if (gate.limited && typeof ref === "string") {
+      try {
+        gate.reference(ref);
+      } catch (e) {
+        if (e instanceof KeyLimitError) throw new McpError(-32003, e.message, e.toJSON());
+        throw e;
+      }
+    }
     const result = await events.subscribe(principal, req.params ?? {});
     void events.deliver().catch((e) => console.error("event delivery failed", e));
     return result;
