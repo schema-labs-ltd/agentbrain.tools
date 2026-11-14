@@ -1,6 +1,7 @@
 import type { Context, Hono } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { CLERK_SIGN_IN_ERRORS, type AccountService } from "./accounts.js";
+import type { ApiKeyService, KeyAccess } from "./apikeys.js";
 import { clerkCsp, clerkPage } from "./clerkui.js";
 import { verifyPassword } from "./crypto.js";
 import { extensionFor, imageHeaders } from "./images.js";
@@ -8,6 +9,8 @@ import { BrainError } from "./errors.js";
 import { renderMarkdown } from "./markdown.js";
 import { SERVER_VERSION } from "./mcp.js";
 import {
+  apiKeysPage,
+  type ApiKeysView,
   brainPage,
   closedBrainPage,
   documentPage,
@@ -26,10 +29,13 @@ import { WEB_SESSION_TTL_MS, type WebSessionService } from "./websession.js";
 /**
  * The read-only website: each person signs in (through Clerk, or with the owner
  * password when Clerk is not configured) and browses their own projects, brains and documents.
- * Nothing here changes a brain. The only POSTs are sign-in and sign-out.
+ * Nothing here changes a brain. The only POSTs are sign-in, sign-out and managing API keys.
  */
-export function registerWebsite(app: Hono, opts: { base: string; store: BrainStore; sessions: WebSessionService; accounts: AccountService }): void {
-  const { base, store, sessions, accounts } = opts;
+export function registerWebsite(
+  app: Hono,
+  opts: { base: string; store: BrainStore; sessions: WebSessionService; accounts: AccountService; apiKeys?: ApiKeyService },
+): void {
+  const { base, store, sessions, accounts, apiKeys } = opts;
   const clerkUi = accounts.clerk ? clerkPage(accounts.clerk) : undefined;
   const loginHeaders = clerkUi
     ? { ...SITE_HEADERS, "content-security-policy": clerkCsp(clerkUi.frontendApi, "form-action 'self'") }
@@ -242,6 +248,49 @@ export function registerWebsite(app: Hono, opts: { base: string; store: BrainSto
     signedIn((c, user) => {
       const { image, data } = store.imageForWebsite(user.userId, referenceOf(c), c.req.param("image")!.toLowerCase());
       return new Response(data as Uint8Array<ArrayBuffer>, { headers: imageHeaders(image.mimeType, `${image.title}.${extensionFor(image.mimeType)}`) });
+    }),
+  );
+
+  // ---------------------------------------------------------------- API keys
+
+  if (!apiKeys) return;
+  const keysView = (userId: string, extra: Partial<ApiKeysView> = {}): ApiKeysView => ({
+    keys: apiKeys.list(userId),
+    projects: store.listProjects(userId).map((p) => ({ token: p.token, name: p.name })),
+    mcpUrl: `${base}/mcp`,
+    ...extra,
+  });
+
+  app.get(
+    "/keys",
+    signedIn((c, user) => html(apiKeysPage(user, keysView(user.userId, { notice: c.req.query("revoked") === "1" ? "The key was revoked. Requests that use it are now refused." : undefined })))),
+  );
+
+  app.post(
+    "/keys",
+    signedIn(async (c, user) => {
+      if (!sameOrigin(c)) return html(messagePage("Request blocked", "That request came from another site.", user), 403);
+      const form = await c.req.parseBody({ all: true });
+      const raw = form.projects;
+      const projects = (Array.isArray(raw) ? raw : raw ? [raw] : []).map(String);
+      try {
+        const created = await apiKeys.create(user.userId, { name: String(form.name ?? ""), access: String(form.access ?? "") as KeyAccess, projects });
+        return html(apiKeysPage(user, keysView(user.userId, { created })), 201);
+      } catch (e) {
+        if (e instanceof BrainError) return html(apiKeysPage(user, keysView(user.userId, { error: e.message })), 400);
+        throw e;
+      }
+    }),
+  );
+
+  app.post(
+    "/keys/:id/revoke",
+    signedIn(async (c, user) => {
+      if (!sameOrigin(c)) return html(messagePage("Request blocked", "That request came from another site.", user), 403);
+      if (!apiKeys.revoke(user.userId, c.req.param("id")!)) {
+        return html(messagePage("Not found", "That key does not exist or was already revoked.", user), 404);
+      }
+      return redirect("/keys?revoked=1");
     }),
   );
 }

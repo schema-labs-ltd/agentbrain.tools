@@ -286,6 +286,20 @@ export class BrainStore {
     return row;
   }
 
+  /** The token of the user's project with this name or token, or undefined when there is none. Never creates one. */
+  findProjectToken(userId: string, project: string): string | undefined {
+    const key = projectKey(project);
+    if (!key) return undefined;
+    const row = one<{ id: string }>(this.sql, `SELECT id FROM projects WHERE user_id = ? AND (name_key = ? OR id = ?)`, userId, key, key);
+    if (!row) this.assertNotOthersProject(userId, key);
+    return row?.id;
+  }
+
+  /** The project token of a brain the user owns, open or closed. Throws like any other read. */
+  projectOfReference(userId: string, reference: string): string {
+    return this.loadBrain(userId, this.requireReference(reference)).project_id;
+  }
+
   // ---------------------------------------------------------------- brains
 
   createBrain(

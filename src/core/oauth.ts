@@ -80,6 +80,8 @@ export interface TokenInfo {
   scopes: Scope[];
   resource: string | null;
   expiresAt: number;
+  /** Set when the request authenticated with an API key instead of an OAuth access token. */
+  apiKey?: { id: string; name: string; projects: string[] | null };
 }
 
 export interface TokenResponse {

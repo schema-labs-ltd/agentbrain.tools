@@ -8,7 +8,7 @@ Without Clerk settings, an instance has a single owner who signs in with `OWNER_
 
 - The website's `/login` page and the OAuth consent page at `/authorize` show Clerk's sign-in. Once signed in, the browser sends a short-lived Clerk session token with the form; the server checks its signature against the instance's keys, its issuer, expiry and the `azp` origin (which must be `PUBLIC_URL`), then reads the person from Clerk's Backend API.
 - Each Clerk user maps to one Agent Brain account. The account is found by Clerk user ID, then by verified primary email, and is otherwise created empty. Matching by email links an existing account (such as the original owner's) the first time that person signs in with Clerk, and keeps it linked if the instance ever moves to another Clerk instance.
-- Every project, brain, image, OAuth grant, website session and event subscription belongs to one account. There is no sharing between accounts.
+- Every project, brain, image, OAuth grant, API key, website session and event subscription belongs to one account. There is no sharing between accounts.
 - Using a project token or brain reference that belongs to another account gives a `forbidden` error that says so: an MCP tool error with code `forbidden`, or a 403 page on the website. Tokens and references that do not exist are still `not_found`.
 - With Clerk configured, password sign-in is off.
 
