@@ -190,7 +190,9 @@ export function registerWebsite(
       const reference = referenceOf(c);
       const summary = store.describeBrain(user.userId, reference);
       if (summary.status !== "active") return html(closedBrainPage(user, summary));
-      return html(brainPage(user, store.getIndex(user.userId, reference), store.recentActivity(user.userId, reference)));
+      const requestIds = store.listRequests(user.userId, { reference, status: "all" }).map((r) => r.id);
+      const requests = requestIds.length ? store.readRequests(user.userId, reference, requestIds).requests : [];
+      return html(brainPage(user, store.getIndex(user.userId, reference), store.recentActivity(user.userId, reference), requests));
     }),
   );
 

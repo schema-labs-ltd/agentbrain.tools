@@ -50,7 +50,7 @@ With Anthropic's MCP connector, give the key as the server's `authorization_toke
 ]
 ```
 
-Every tool works with a key except `close_brain`, including `read_guide`, `list_projects`, `open_project`, `list_brains`, `create_brain`, `read_index`, `read_documents`, `create_document`, `patch_document`, `replace_document` and `upload_image`.
+Every tool works with a key except `close_brain`, including `read_guide`, `list_projects`, `open_project`, `list_brains`, `create_brain`, `read_index`, `read_documents`, `create_document`, `patch_document`, `replace_document`, `upload_image` and the request tools (`create_request`, `list_requests`, `read_requests`, `update_request`). A key limited to some projects only sees requests in those projects.
 
 ## Errors
 

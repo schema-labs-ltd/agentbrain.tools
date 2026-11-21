@@ -12,7 +12,7 @@ Every deployment needs three settings:
 
 To give several people their own accounts, set `CLERK_PUBLISHABLE_KEY` and `CLERK_SECRET_KEY` as well. People then sign in through Clerk on the website and the OAuth consent page; see [accounts](accounts.md).
 
-Optional limits (defaults in brackets): `LIMIT_DOCUMENT_BYTES` (65536), `LIMIT_BRAIN_DOCUMENTS` (50), `LIMIT_BRAIN_BYTES` (1048576), `LIMIT_REVISIONS_PER_DOCUMENT` (50), `LIMIT_EVENTS_PER_BRAIN` (1000), `LIMIT_IMAGE_BYTES` (5242880), `LIMIT_BRAIN_IMAGES` (20), `LIMIT_BRAIN_IMAGE_BYTES` (26214400). Images live in the same SQLite database as documents, split into 1 MB chunks.
+Optional limits (defaults in brackets): `LIMIT_DOCUMENT_BYTES` (65536), `LIMIT_BRAIN_DOCUMENTS` (50), `LIMIT_BRAIN_BYTES` (1048576), `LIMIT_REVISIONS_PER_DOCUMENT` (50), `LIMIT_EVENTS_PER_BRAIN` (1000), `LIMIT_IMAGE_BYTES` (5242880), `LIMIT_BRAIN_IMAGES` (20), `LIMIT_BRAIN_IMAGE_BYTES` (26214400), `LIMIT_BRAIN_REQUESTS` (100). Images live in the same SQLite database as documents, split into 1 MB chunks.
 
 ## Docker
 

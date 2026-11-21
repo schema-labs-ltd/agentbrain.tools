@@ -240,6 +240,35 @@ const MIGRATIONS: string[][] = [
     )`,
     `CREATE INDEX api_keys_user ON api_keys (user_id)`,
   ],
+  [
+    // Work requests: one agent asks another, named agent to do something for this brain's task.
+    // feed_seq orders new requests across all brains for the request.opened event; it comes from
+    // the counters table so a number is never reused after a brain is closed.
+    `CREATE TABLE requests (
+      brain_id TEXT NOT NULL,
+      id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      to_name TEXT NOT NULL,
+      to_key TEXT NOT NULL,
+      title TEXT NOT NULL,
+      details TEXT NOT NULL,
+      deliver_to TEXT,
+      status TEXT NOT NULL,
+      result TEXT,
+      revision INTEGER NOT NULL,
+      feed_seq INTEGER NOT NULL,
+      created_at INTEGER NOT NULL,
+      created_by TEXT NOT NULL,
+      updated_at INTEGER NOT NULL,
+      updated_by TEXT NOT NULL,
+      PRIMARY KEY (brain_id, id)
+    )`,
+    `CREATE INDEX requests_feed ON requests (user_id, feed_seq)`,
+    `CREATE TABLE counters (
+      name TEXT PRIMARY KEY,
+      value INTEGER NOT NULL
+    )`,
+  ],
 ];
 
 export function migrate(sql: Sql): void {

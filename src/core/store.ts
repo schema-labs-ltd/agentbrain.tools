@@ -26,6 +26,8 @@ export interface Limits {
   brainImages: number;
   /** Maximum total size of all live images in one brain, in bytes. */
   brainImageBytes: number;
+  /** Maximum number of requests (in any status) in one brain. */
+  brainRequests: number;
 }
 
 export const DEFAULT_LIMITS: Limits = {
@@ -37,7 +39,16 @@ export const DEFAULT_LIMITS: Limits = {
   imageBytes: 5 * 1024 * 1024,
   brainImages: 20,
   brainImageBytes: 25 * 1024 * 1024,
+  brainRequests: 100,
 };
+
+/** Size limits for one request. */
+export const REQUEST_LIMITS = { to: 100, title: 200, details: 16 * 1024, deliverTo: 500, result: 4000 } as const;
+
+export const REQUEST_STATUSES = ["open", "accepted", "done", "declined", "cancelled"] as const;
+export type RequestStatus = (typeof REQUEST_STATUSES)[number];
+/** Statuses that still need someone to act. */
+export const ACTIVE_REQUEST_STATUSES: readonly RequestStatus[] = ["open", "accepted"];
 
 /** Image bytes are stored in chunks below the 2 MB Durable Object row limit. */
 const IMAGE_CHUNK_BYTES = 1024 * 1024;
@@ -88,6 +99,8 @@ export interface BrainIndex extends BrainSummary {
   cursor: string;
   documents: DocumentSummary[];
   images: ImageSummary[];
+  /** Requests still waiting for someone to act (open or accepted). */
+  requests: RequestSummary[];
   usage: {
     documents: number;
     bytes: number;
@@ -158,6 +171,30 @@ type ImageRow = {
   updated_at: number;
   updated_by: string;
 };
+
+type RequestRow = {
+  brain_id: string;
+  id: string;
+  user_id: string;
+  to_name: string;
+  to_key: string;
+  title: string;
+  details: string;
+  deliver_to: string | null;
+  status: string;
+  result: string | null;
+  revision: number;
+  feed_seq: number;
+  created_at: number;
+  created_by: string;
+  updated_at: number;
+  updated_by: string;
+};
+
+/** Normalise an addressee for matching: trimmed, whitespace collapsed, case-insensitive. */
+export function agentKey(name: string): string {
+  return name.trim().replace(/\s+/g, " ").toLowerCase();
+}
 
 type DocRow = {
   brain_id: string;
@@ -715,6 +752,179 @@ export class BrainStore {
     return { image: this.imageSummary(row), data: this.imageBytes(row.brain_id, row) };
   }
 
+
+  // ---------------------------------------------------------------- requests
+
+  /** Ask another agent, by name, to do something for this brain's task. */
+  createRequest(actor: Actor, reference: string, input: { to: string; title: string; details?: string; deliverTo?: string }): RequestWriteResult {
+    return this.sql.transaction(() => {
+      const brain = this.loadActiveBrain(actor.userId, reference);
+      const to = requireText(input.to, "to", REQUEST_LIMITS.to).replace(/\s+/g, " ");
+      const title = requireText(input.title, "title", REQUEST_LIMITS.title);
+      const details = checkedText(input.details ?? "", "details", REQUEST_LIMITS.details);
+      const deliverTo = cleanChecked(input.deliverTo, "deliver_to", REQUEST_LIMITS.deliverTo);
+      const count = one<{ n: number }>(this.sql, `SELECT COUNT(*) AS n FROM requests WHERE brain_id = ?`, brain.id)!.n;
+      if (count >= this.limits.brainRequests) {
+        throw new BrainError("limit_exceeded", "The brain already holds the maximum number of requests.", { limit: "brainRequests", maximum: this.limits.brainRequests });
+      }
+      const id = newDocumentId();
+      const now = this.now();
+      this.sql.run(
+        `INSERT INTO requests (brain_id, id, user_id, to_name, to_key, title, details, deliver_to, status, result, revision, feed_seq, created_at, created_by, updated_at, updated_by)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', NULL, 1, ?, ?, ?, ?, ?)`,
+        brain.id,
+        id,
+        actor.userId,
+        to,
+        agentKey(to),
+        title,
+        details,
+        deliverTo,
+        this.nextCounter("request_feed"),
+        now,
+        actorString(actor),
+        now,
+        actorString(actor),
+      );
+      return this.finishRequestWrite(brain, id, "request.created", actor);
+    });
+  }
+
+  /**
+   * Change a request's status, result or wording. Revision-checked like documents.
+   * Moves: open -> accepted | done | declined | cancelled; accepted -> open | done | declined | cancelled;
+   * done, declined or cancelled -> open (reopen).
+   */
+  updateRequest(
+    actor: Actor,
+    reference: string,
+    input: { id: string; baseRevision: number; status?: RequestStatus; result?: string; title?: string; details?: string; deliverTo?: string; to?: string },
+  ): RequestWriteResult {
+    return this.sql.transaction(() => {
+      const brain = this.loadActiveBrain(actor.userId, reference);
+      const row = this.checkRequestRevision(brain.id, input.id, input.baseRevision);
+      const from = row.status as RequestStatus;
+      const status = input.status ?? from;
+      if (!REQUEST_STATUSES.includes(status)) throw new BrainError("invalid_request", `status must be one of ${REQUEST_STATUSES.join(", ")}.`);
+      if (status !== from) {
+        const allowed: Record<RequestStatus, RequestStatus[]> = {
+          open: ["accepted", "done", "declined", "cancelled"],
+          accepted: ["open", "done", "declined", "cancelled"],
+          done: ["open"],
+          declined: ["open"],
+          cancelled: ["open"],
+        };
+        if (!allowed[from].includes(status)) {
+          throw new BrainError("invalid_request", `A request that is ${from} cannot become ${status}.`, { status: from, allowed: allowed[from] });
+        }
+      }
+      const to = input.to !== undefined ? requireText(input.to, "to", REQUEST_LIMITS.to).replace(/\s+/g, " ") : row.to_name;
+      const title = input.title !== undefined ? requireText(input.title, "title", REQUEST_LIMITS.title) : row.title;
+      const details = input.details !== undefined ? checkedText(input.details, "details", REQUEST_LIMITS.details) : row.details;
+      const deliverTo = input.deliverTo !== undefined ? cleanChecked(input.deliverTo, "deliver_to", REQUEST_LIMITS.deliverTo) : row.deliver_to;
+      // Reopening clears the old result unless a new one is given.
+      const result =
+        input.result !== undefined ? cleanChecked(input.result, "result", REQUEST_LIMITS.result) : status === "open" && from !== "open" && from !== "accepted" ? null : row.result;
+      this.sql.run(
+        `UPDATE requests SET to_name = ?, to_key = ?, title = ?, details = ?, deliver_to = ?, status = ?, result = ?, revision = ?, updated_at = ?, updated_by = ?
+         WHERE brain_id = ? AND id = ?`,
+        to,
+        agentKey(to),
+        title,
+        details,
+        deliverTo,
+        status,
+        result,
+        row.revision + 1,
+        this.now(),
+        actorString(actor),
+        brain.id,
+        row.id,
+      );
+      return this.finishRequestWrite(brain, row.id, "request.updated", actor);
+    });
+  }
+
+  /** Read requests in full, including their details. */
+  readRequests(userId: string, reference: string, ids: string[]): { requests: RequestDetail[]; missing: string[] } {
+    const brain = this.loadActiveBrain(userId, reference);
+    const requests: RequestDetail[] = [];
+    const missing: string[] = [];
+    for (const id of ids) {
+      const row = this.findRequest(brain.id, id);
+      if (row) requests.push(this.requestDetail(brain, row));
+      else missing.push(id);
+    }
+    return { requests, missing };
+  }
+
+  /**
+   * List requests in one brain, or across all the user's active brains when no reference is given.
+   * By default only requests that still need someone to act (open or accepted) are listed.
+   */
+  listRequests(
+    userId: string,
+    input: { reference?: string; to?: string; status?: RequestStatus | "all"; allowProject?: (token: string) => boolean },
+  ): RequestSummary[] {
+    const brains = input.reference ? [this.loadActiveBrain(userId, input.reference)] : undefined;
+    const statuses = !input.status ? ACTIVE_REQUEST_STATUSES : input.status === "all" ? REQUEST_STATUSES : [input.status];
+    const rows = this.sql.all<RequestRow & { project_id: string; project_name: string; brain_title: string | null }>(
+      `SELECT r.*, b.project_id, b.title AS brain_title, p.name AS project_name FROM requests r
+       JOIN brains b ON b.id = r.brain_id JOIN projects p ON p.id = b.project_id
+       WHERE r.user_id = ? AND b.status = 'active' ${brains ? "AND r.brain_id = ?" : ""} ${input.to ? "AND r.to_key = ?" : ""}
+       ORDER BY r.created_at DESC, r.rowid DESC LIMIT 500`,
+      userId,
+      ...(brains ? [brains[0]!.id] : []),
+      ...(input.to ? [agentKey(input.to)] : []),
+    );
+    return rows
+      .filter((r) => (statuses as readonly string[]).includes(r.status) && (!input.allowProject || input.allowProject(r.project_id)))
+      .map((r) => this.requestSummary(r, formatReference(r.project_id, r.brain_id), r.brain_title));
+  }
+
+  /**
+   * New requests addressed to one agent, after a feed position, for the request.opened event.
+   * The position is a user-wide sequence, so one subscription can follow every brain.
+   */
+  requestFeed(
+    userId: string,
+    input: { to: string; brainId?: string; after: number; limit: number; allowProject?: (token: string) => boolean },
+  ): { items: { seq: number; request: RequestSummary; brainTitle: string | null; createdBy: { client: string; clientName: string | null } }[]; last: number; raw: number } {
+    const rows = this.sql.all<RequestRow & { project_id: string; brain_title: string | null }>(
+      `SELECT r.*, b.project_id, b.title AS brain_title FROM requests r JOIN brains b ON b.id = r.brain_id
+       WHERE r.user_id = ? AND r.feed_seq > ? AND r.to_key = ? AND b.status = 'active' ${input.brainId ? "AND r.brain_id = ?" : ""}
+       ORDER BY r.feed_seq LIMIT ?`,
+      userId,
+      input.after,
+      agentKey(input.to),
+      ...(input.brainId ? [input.brainId] : []),
+      input.limit,
+    );
+    return {
+      items: rows
+        .filter((r) => !input.allowProject || input.allowProject(r.project_id))
+        .map((r) => ({
+          seq: r.feed_seq,
+          request: this.requestSummary(r, formatReference(r.project_id, r.brain_id), r.brain_title),
+          brainTitle: r.brain_title,
+          createdBy: parseActor(r.created_by),
+        })),
+      last: rows.length ? rows[rows.length - 1]!.feed_seq : input.after,
+      raw: rows.length,
+    };
+  }
+
+  /** The latest request feed position, shared by all users. */
+  requestFeedPosition(): number {
+    return one<{ value: number }>(this.sql, `SELECT value FROM counters WHERE name = 'request_feed'`)?.value ?? 0;
+  }
+
+  /** A request's title, addressee and status, for event payloads. Undefined once deleted. */
+  requestBrief(brainId: string, id: string): { title: string; to: string; status: string } | undefined {
+    const row = this.findRequest(brainId, id);
+    return row ? { title: row.title, to: row.to_name, status: row.status } : undefined;
+  }
+
   // ---------------------------------------------------------------- changes
 
   getChanges(
@@ -791,6 +1001,7 @@ export class BrainStore {
       this.sql.run(`DELETE FROM images WHERE brain_id = ?`, brain.id);
       this.sql.run(`DELETE FROM image_chunks WHERE brain_id = ?`, brain.id);
       this.sql.run(`DELETE FROM image_links WHERE brain_id = ?`, brain.id);
+      this.sql.run(`DELETE FROM requests WHERE brain_id = ?`, brain.id);
       this.sql.run(
         `UPDATE brains SET status = 'closed', title = NULL, description = NULL, closed_at = ?, updated_at = ? WHERE id = ?`,
         now,
@@ -817,6 +1028,9 @@ export class BrainStore {
       finalCursor: String(brain.last_seq),
       documents: docs.map((d) => ({ ...docSummary(d), markdown: d.body })),
       images: this.liveImages(brain.id).map((r) => this.imageSummary(r)),
+      requests: this.sql
+        .all<RequestRow>(`SELECT * FROM requests WHERE brain_id = ? ORDER BY created_at, rowid`, brain.id)
+        .map((r) => this.requestDetail(brain, r)),
     };
   }
 
@@ -919,13 +1133,15 @@ export class BrainStore {
   recentActivity(userId: string, reference: string, limit = 20): ActivityItem[] {
     const brain = this.loadActiveBrain(userId, reference);
     return this.sql
-      .all<{ seq: number; type: string; document_id: string | null; revision: number | null; actor: string; created_at: number; title: string | null; deleted: number | null }>(
+      .all<{ seq: number; type: string; document_id: string | null; revision: number | null; actor: string; created_at: number; title: string | null; deleted: number | null; request_status: string | null; request_to: string | null }>(
         `SELECT e.seq, e.type, e.document_id, e.revision, e.actor, e.created_at,
-           CASE WHEN e.type LIKE 'image.%' THEN i.title ELSE d.title END AS title,
-           CASE WHEN e.type LIKE 'image.%' THEN i.deleted ELSE d.deleted END AS deleted
+           CASE WHEN e.type LIKE 'image.%' THEN i.title WHEN e.type LIKE 'request.%' THEN rq.title ELSE d.title END AS title,
+           CASE WHEN e.type LIKE 'image.%' THEN i.deleted WHEN e.type LIKE 'request.%' THEN 0 ELSE d.deleted END AS deleted,
+           rq.status AS request_status, rq.to_name AS request_to
          FROM events e
          LEFT JOIN documents d ON d.brain_id = e.brain_id AND d.id = e.document_id
          LEFT JOIN images i ON i.brain_id = e.brain_id AND i.id = e.document_id
+         LEFT JOIN requests rq ON rq.brain_id = e.brain_id AND rq.id = e.document_id
          WHERE e.brain_id = ? ORDER BY e.seq DESC LIMIT ?`,
         brain.id,
         Math.min(Math.max(limit, 1), 100),
@@ -933,8 +1149,9 @@ export class BrainStore {
       .map((r) => ({
         seq: r.seq,
         type: r.type,
-        documentId: r.type.startsWith("image.") ? null : r.document_id,
-        documentTitle: r.type.startsWith("image.") || r.deleted ? null : r.title,
+        documentId: r.type.startsWith("image.") || r.type.startsWith("request.") ? null : r.document_id,
+        documentTitle: r.type.startsWith("image.") || r.type.startsWith("request.") || r.deleted ? null : r.title,
+        ...(r.type.startsWith("request.") ? { requestId: r.document_id, requestTitle: r.title, requestTo: r.request_to, requestStatus: r.request_status } : {}),
         imageId: r.type.startsWith("image.") ? r.document_id : null,
         imageTitle: r.type.startsWith("image.") && !r.deleted ? r.title : null,
         revision: r.revision,
@@ -1144,6 +1361,64 @@ export class BrainStore {
     return seq;
   }
 
+  private nextCounter(name: string): number {
+    this.sql.run(`INSERT INTO counters (name, value) VALUES (?, 1) ON CONFLICT (name) DO UPDATE SET value = value + 1`, name);
+    return one<{ value: number }>(this.sql, `SELECT value FROM counters WHERE name = ?`, name)!.value;
+  }
+
+  private findRequest(brainId: string, id: string): RequestRow | undefined {
+    return one<RequestRow>(this.sql, `SELECT * FROM requests WHERE brain_id = ? AND id = ?`, brainId, id.trim());
+  }
+
+  private checkRequestRevision(brainId: string, id: string, baseRevision: number): RequestRow {
+    const row = this.findRequest(brainId, id);
+    if (!row) throw new BrainError("not_found", `Request ${id} does not exist in this brain.`);
+    if (row.revision !== baseRevision) {
+      const brain = one<BrainRow>(this.sql, `SELECT b.*, p.name AS project_name FROM brains b JOIN projects p ON p.id = b.project_id WHERE b.id = ?`, brainId)!;
+      throw new BrainError(
+        "conflict",
+        `Request ${id} has changed since revision ${baseRevision}. Read the current version below, decide whether your change still applies and retry with baseRevision ${row.revision}.`,
+        { current: this.requestDetail(brain, row) },
+      );
+    }
+    return row;
+  }
+
+  private finishRequestWrite(brain: BrainRow, id: string, type: string, actor: Actor): RequestWriteResult {
+    const row = this.findRequest(brain.id, id)!;
+    const seq = this.appendEvent(brain.id, type, id, row.revision, actor);
+    this.touch(brain.id);
+    return { request: this.requestDetail(brain, row), cursor: String(seq) };
+  }
+
+  private requestSummary(r: RequestRow, reference: string, brainTitle: string | null): RequestSummary {
+    return {
+      id: r.id,
+      reference,
+      brainTitle,
+      to: r.to_name,
+      title: r.title,
+      deliverTo: r.deliver_to,
+      status: r.status as RequestStatus,
+      result: r.result,
+      revision: r.revision,
+      createdAt: iso(r.created_at),
+      createdBy: parseActor(r.created_by),
+      updatedAt: iso(r.updated_at),
+      updatedBy: parseActor(r.updated_by),
+    };
+  }
+
+  private requestDetail(brain: BrainRow, r: RequestRow): RequestDetail {
+    return { ...this.requestSummary(r, formatReference(brain.project_id, brain.id), brain.title), details: r.details };
+  }
+
+  private activeRequests(brain: BrainRow): RequestSummary[] {
+    return this.sql
+      .all<RequestRow>(`SELECT * FROM requests WHERE brain_id = ? AND status IN ('open', 'accepted') ORDER BY created_at, rowid`, brain.id)
+      .map((r) => this.requestSummary(r, formatReference(brain.project_id, brain.id), brain.title));
+  }
+
   private imageSummary(r: ImageRow): ImageSummary {
     return toImageSummary(r, `${this.publicBase}/i/${r.public_token}.${extensionFor(r.mime_type)}`);
   }
@@ -1324,6 +1599,7 @@ export class BrainStore {
       cursor: String(row.last_seq),
       documents: docs.map(docSummary),
       images: this.liveImages(row.id).map((r) => this.imageSummary(r)),
+      requests: this.activeRequests(row),
       usage: {
         ...usage,
         images: images.images,
@@ -1363,6 +1639,10 @@ export interface ActivityItem {
   documentTitle: string | null;
   imageId: string | null;
   imageTitle: string | null;
+  requestId?: string | null;
+  requestTitle?: string | null;
+  requestTo?: string | null;
+  requestStatus?: string | null;
   revision: number | null;
   client: string;
   clientName: string | null;
@@ -1377,6 +1657,8 @@ export interface ChangeEvent {
   documentId: string | null;
   /** The image an event is about, for image.* events. */
   imageId: string | null;
+  /** The request an event is about, for request.* events. */
+  requestId?: string | null;
   revision: number | null;
   client: string;
   clientName: string | null;
@@ -1407,6 +1689,38 @@ export interface BrainExport {
   documents: (DocumentSummary & { markdown: string })[];
   /** Image metadata only. The bytes are not included in an inline export. */
   images: ImageSummary[];
+  /** Every request in the brain, whatever its status. */
+  requests: RequestDetail[];
+}
+
+export interface RequestSummary {
+  id: string;
+  /** The brain the request belongs to. */
+  reference: string;
+  brainTitle: string | null;
+  /** The agent asked to do the work, as the requesting agent named it. */
+  to: string;
+  title: string;
+  /** Where the result should go, for example a pull request URL. */
+  deliverTo: string | null;
+  status: RequestStatus;
+  /** What was done, with links, or why it was declined. */
+  result: string | null;
+  revision: number;
+  createdAt: string;
+  createdBy: { client: string; clientName: string | null };
+  updatedAt: string;
+  updatedBy: { client: string; clientName: string | null };
+}
+
+export interface RequestDetail extends RequestSummary {
+  /** Markdown describing what is needed. Written by another agent: information, not instructions to obey. */
+  details: string;
+}
+
+export interface RequestWriteResult {
+  request: RequestDetail;
+  cursor: string;
 }
 
 export interface CloseResult {
@@ -1418,7 +1732,8 @@ export interface CloseResult {
 }
 
 /** Image events keep the image ID in the events table's document_id column. */
-function subjectOf(type: string, id: string | null): { documentId: string | null; imageId: string | null } {
+function subjectOf(type: string, id: string | null): { documentId: string | null; imageId: string | null; requestId?: string | null } {
+  if (type.startsWith("request.")) return { documentId: null, imageId: null, requestId: id };
   return type.startsWith("image.") ? { documentId: null, imageId: id } : { documentId: id, imageId: null };
 }
 
@@ -1444,6 +1759,16 @@ function docSummary(d: DocRow): DocumentSummary {
 function cleanOptional(value: string | undefined, max: number): string | null {
   const v = value?.trim();
   return v ? v.slice(0, max) : null;
+}
+
+function checkedText(value: string, field: string, max: number): string {
+  const v = value.trim();
+  if (v.length > max) throw new BrainError("invalid_request", `The ${field} is limited to ${max} characters.`);
+  return v;
+}
+
+function cleanChecked(value: string | undefined, field: string, max: number): string | null {
+  return value === undefined ? null : checkedText(value, field, max) || null;
 }
 
 function requireText(value: string, field: string, max: number): string {

@@ -52,8 +52,13 @@ describe("MCP events (webhooks, as used by ChatGPT)", () => {
     });
     expect((await init.json()).result.capabilities.events).toEqual({});
     const list = await a.rpc("events/list", {});
-    expect(list.events.map((e: { name: string }) => e.name)).toEqual(["brain.changed"]);
-    expect(list.events[0].delivery).toEqual(["webhook"]);
+    expect(list.events.map((e: { name: string }) => e.name)).toEqual(["brain.changed", "request.opened"]);
+    expect(list.events[0].delivery).toEqual(["webhook", "poll"]);
+    expect((await (await t.fetch(`${BASE}/mcp`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${a.tokens.access_token}`, "content-type": "application/json", accept: "application/json, text/event-stream" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "initialize", params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "c", version: "1" } } }),
+    })).json()).result.capabilities.extensions).toEqual({ "io.modelcontextprotocol/events": {} });
   });
 
   it("verifies the callback, then delivers each change as a signed Standard Webhooks POST", async () => {
