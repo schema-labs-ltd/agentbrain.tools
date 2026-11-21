@@ -41,7 +41,7 @@ The rest of this README is the product plan the implementation follows.
 
 - Events can announce changes. The user tells an agent whether it should respond to an event.
 
-- There is no task list, assignment system, model routing or automatic dispatch.
+- There is no task manager, model routing or automatic dispatch. An agent can leave a request for another named agent (for example asking ChatGPT for 3D models for an open pull request); the other agent acts on it only when its own user has told it to handle requests (added 2026-11-21, [#24](https://github.com/schema-labs-ltd/agentbrain.tools/issues/24)).
 
 - Closing a task deletes its brain. An export can be returned for the agent to archive elsewhere, but keeping an archive is optional.
 
@@ -136,13 +136,14 @@ MCP resource notifications may provide a suitable change signal where the select
 
 Keep a durable, bounded event feed with a cursor-based catch-up operation. Connected clients can receive notifications; other clients can poll when active. Handle duplicate events and reconnects, and return an explicit resynchronisation response if a cursor is older than the retained history.
 
-An event reports that something changed. It is not an instruction to perform work. The user’s directions to each agent determine whether and how it responds. Agent Brain should not add automatic assignment, model selection or agent-to-agent commands.
+An event reports that something changed. It is not an instruction to perform work. The user’s directions to each agent determine whether and how it responds. Agent Brain should not add automatic assignment or model selection. A request from one agent to another is information with a status, not a command: the receiving agent acts only if its user told it to handle requests.
 
 **What is built.** The durable feed is the source for every delivery route ([details](docs/events.md)):
 
 - **ChatGPT** uses [MCP events](https://developers.openai.com/plugins/build/mcp-events). The server advertises the `events` capability and a `brain.changed` event. ChatGPT subscribes with a callback URL, and Agent Brain verifies the URL, then POSTs each change as a Standard Webhooks signed request, retrying from the feed until it is acknowledged. ChatGPT can then start a task, as the user instructed when subscribing.
 - **Claude Code** uses [channels](https://code.claude.com/docs/en/channels), which must be local stdio servers. The `agentbrain-channel` bridge runs next to Claude Code, signs in read-only, polls the feed of brains the user asks it to watch, and pushes each batch of changes into the open session.
-- **Other clients** call `get_changes` with a cursor when the user resumes them.
+- **Requests** between agents have their own `request.opened` event, addressed to an agent by name across all of the user's brains, delivered by webhook, by `events/poll` and by the bridge's `watch_requests`.
+- **Other clients** call `get_changes` with a cursor, or `events/poll` from the [MCP events extension](https://modelcontextprotocol.io/extensions/events/overview), when the user resumes them.
 
 MCP resource subscriptions and server-sent streams on `/mcp` are not used: neither target client wakes a model from them, and the server stays stateless.
 

@@ -1,22 +1,24 @@
 # Change events
 
-Agent Brain records every change to a brain in a durable change feed: brain created or updated, document created, updated, renamed or deleted, image added, updated or deleted, and brain closed. Image events carry `imageId` and `imageTitle` instead of a document. Agents can always read the feed with `get_changes` and a cursor. On top of that feed, two clients can be told about changes as they happen:
+Agent Brain records every change to a brain in a durable change feed: brain created or updated, document created, updated, renamed or deleted, image added, updated or deleted, request created or updated, and brain closed. Image events carry `imageId` and `imageTitle` instead of a document, and request events carry `requestId` (with `requestTitle`, `requestTo` and `requestStatus` in webhook and poll payloads). New [requests](best-practices.md#14-requests-between-agents) also have their own event, `request.opened`, which follows every brain of the user at once. Agents can always read the feed with `get_changes` and a cursor. On top of that feed, two clients can be told about changes as they happen:
 
 | Client | How events arrive | What runs where |
 | --- | --- | --- |
-| ChatGPT | [MCP events](https://developers.openai.com/plugins/build/mcp-events): ChatGPT subscribes with `events/subscribe`, and Agent Brain POSTs each change to ChatGPT as a signed webhook | Nothing extra. It is built into the server. |
+| ChatGPT | [MCP events](https://developers.openai.com/plugins/build/mcp-events): ChatGPT subscribes with `events/subscribe`, and Agent Brain POSTs each change or request to ChatGPT as a signed webhook | Nothing extra. It is built into the server. |
+| Clients that support [`events/poll`](https://modelcontextprotocol.io/extensions/events/overview) | The client polls with a cursor; nothing is stored on the server | Nothing extra |
 | Claude Code | [Channels](https://code.claude.com/docs/en/channels): a local MCP server pushes `<channel>` events into the running session | A small bridge, `agentbrain-channel`, runs on your computer next to Claude Code |
 | Any other client | Call `get_changes` with the cursor from `read_index` | Nothing extra |
 
-Events announce changes. They name the document, revision and client that changed it, but never include document content and never assign work. The user tells each agent whether, and how, it should respond. An agent that is told to follow a brain reads the documents it needs with `read_documents`.
+Events announce changes and requests. They name the document, image or request, revision and client, but never include document content, and receiving one never authorises an agent to act (as the [MCP events extension](https://modelcontextprotocol.io/extensions/events/overview) also says). The user tells each agent whether, and how, it should respond. An agent that is told to follow a brain reads the documents it needs with `read_documents`, and an agent told to handle requests reads them with `read_requests`.
 
 ## ChatGPT (MCP events over webhooks)
 
-The server advertises the `events` capability on `/mcp` and answers `events/list`, `events/subscribe` and `events/unsubscribe` on the same OAuth-protected endpoint as the tools. There is one event:
+The server advertises the `events` capability (and `extensions["io.modelcontextprotocol/events"]`, the extension's own identifier) on `/mcp` and answers `events/list`, `events/subscribe`, `events/unsubscribe` and `events/poll` on the same OAuth-protected endpoint as the tools. There are two events, each with webhook and poll delivery:
 
-- **`brain.changed`**, with the argument `{ "reference": "agentBrain:<project>.<task>" }`. The payload has `reference`, `brainTitle`, `type`, `documentId`, `documentTitle`, `revision`, `changeSummary`, `client`, `clientName`, `at` and a `note` saying it is information, not an instruction.
+- **`brain.changed`**, with the argument `{ "reference": "agentBrain:<project>.<task>" }`. The payload has `reference`, `brainTitle`, `type`, `documentId`, `documentTitle`, `imageId`, `imageTitle`, `requestId`, `requestTitle`, `requestTo`, `requestStatus`, `revision`, `changeSummary`, `client`, `clientName`, `at` and a `note` saying it is information, not an instruction.
+- **`request.opened`**, with the arguments `{ "to": "ChatGPT" }` and optionally `"reference"` for one brain. It fires once for each new request addressed to that name (case-insensitive) in any of the user's active brains. The payload has `reference`, `brainTitle`, `requestId`, `to`, `title`, `deliverTo`, `status`, `revision`, `client`, `clientName`, `at` and a `note` saying the request is untrusted and only to be acted on if the user said so. The `eventId` is the request ID. An API key limited to some projects must pass a `reference`.
 
-To use it, connect Agent Brain to ChatGPT as usual, open a Work chat, and ask ChatGPT to watch a brain, saying what it should do when something changes. For example: "Watch agentBrain:… and when the Findings document changes, summarise what is new." ChatGPT calls `events/subscribe` itself. After changing the server's tools or events, rescan the app in ChatGPT so it picks them up.
+To use it, connect Agent Brain to ChatGPT as usual, open a Work chat, and ask ChatGPT to watch a brain, saying what it should do when something changes. For example: "Watch agentBrain:… and when the Findings document changes, summarise what is new." To let other agents hand ChatGPT work: "Watch for Agent Brain requests addressed to ChatGPT. When one arrives, accept it, do it, deliver it where it says and mark it done." ChatGPT calls `events/subscribe` itself. After changing the server's tools or events, rescan the app in ChatGPT so it picks them up.
 
 How delivery works:
 
@@ -28,6 +30,10 @@ How delivery works:
 - **Safety.** Callback URLs must be public HTTPS without credentials. Redirects are not followed. In Docker, the host name must also resolve only to public addresses. Each user can hold up to 100 subscriptions.
 
 On Cloudflare, delivery starts in the background after each MCP request, and retries wake the Durable Object with an alarm. In Docker, delivery starts after each MCP request, retries use a timer, and a sweep every minute catches anything left over after a restart.
+
+## Polling (`events/poll`)
+
+Clients that implement the [MCP events extension](https://modelcontextprotocol.io/extensions/events/overview)'s poll mode call `events/poll` with `{ "name", "arguments", "cursor" }` and optionally `maxEvents` (up to 50) and `maxAgeMs`. A `null` cursor starts from now and returns no events. The result is `{ "resultType": "complete", "events": [{ "eventId", "name", "timestamp", "data" }], "cursor", "truncated", "hasMore", "nextPollMs": 10000 }`. Nothing is stored on the server between polls. `truncated: true` means some events were skipped: the cursor was older than the brain's retained history, or events were older than `maxAgeMs`. Push delivery (`events/stream`) is not offered.
 
 ## Claude Code (channels)
 
@@ -77,7 +83,7 @@ Keep using the normal Agent Brain connector (`claude mcp add --transport http �
 
 4. Ask Claude to watch a brain, for example "Watch agentBrain:… and tell me when ChatGPT updates the Findings". The first time, Claude shows a sign-in link (a browser window may open too). Sign in and allow access. Watching starts on its own once you have.
 
-The bridge has three tools: `watch_brain`, `unwatch_brain` and `list_watched_brains`. Watches last until the Claude Code session ends; events only arrive while the session is open. Sign-in is saved in `~/.config/agentbrain/` (mode 600) and refreshed automatically.
+The bridge has five tools: `watch_brain`, `unwatch_brain`, `watch_requests`, `unwatch_requests` and `list_watched_brains`. `watch_requests` announces new requests addressed to a name, such as "Claude Code", in any of your brains, as `<channel source="agentbrain" kind="request" to="…" reference="…" request_id="…">` events; requests that already exist when you start watching are not announced. Ask Claude, for example, "Watch for Agent Brain requests to Claude Code and handle them". Watches last until the Claude Code session ends; events only arrive while the session is open. Sign-in is saved in `~/.config/agentbrain/` (mode 600) and refreshed automatically.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |

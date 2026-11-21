@@ -1,7 +1,7 @@
 import { clerkScripts, type ClerkPage } from "./clerkui.js";
-import { escapeHtml as esc } from "./markdown.js";
+import { escapeHtml as esc, renderMarkdown, safeHref } from "./markdown.js";
 import type { ApiKeySummary } from "./apikeys.js";
-import type { ActivityItem, BrainIndex, BrainListing, BrainSummary, DocumentSummary, ImageSummary, ProjectOverview } from "./store.js";
+import type { ActivityItem, BrainIndex, BrainListing, BrainSummary, DocumentSummary, ImageSummary, ProjectOverview, RequestDetail } from "./store.js";
 
 /** HTML for the read-only website. No JavaScript: everything is server-rendered. */
 
@@ -52,6 +52,12 @@ h2.section { font-size:18px; margin:32px 0 10px; }
 .ref { display:block; font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; background:var(--soft); border:1px solid var(--line); border-radius:8px; padding:8px 10px; user-select:all; -webkit-user-select:all; word-break:break-all; margin:0 0 16px; }
 .notice { background:var(--warn-bg); border:1px solid var(--warn-line); border-radius:10px; padding:10px 14px; margin:0 0 16px; font-size:15px; }
 .empty { color:var(--muted); background:var(--card); border:1px dashed var(--line); border-radius:12px; padding:20px 16px; }
+.request .result { margin-top:10px; padding:10px 12px; font-size:15px; background:var(--soft); }
+.request details.req-details { margin-top:8px; }
+.request details.req-details summary { cursor:pointer; font-size:14px; font-weight:600; color:var(--muted); }
+.request details.req-details .md { margin-top:8px; padding:12px 14px; font-size:15px; }
+.pill.status-done { color:var(--accent); }
+.pill.status-declined, .pill.status-cancelled { text-decoration:none; opacity:.8; }
 .activity { list-style:none; margin:0; padding:0; font-size:14px; }
 .activity li { padding:8px 0; border-bottom:1px solid var(--line); display:flex; flex-wrap:wrap; gap:2px 10px; }
 .activity time, .activity .who { color:var(--muted); }
@@ -284,7 +290,35 @@ const EVENT_LABELS: Record<string, string> = {
   "image.created": "Added image",
   "image.updated": "Updated image details",
   "image.deleted": "Deleted an image",
+  "request.created": "Asked",
+  "request.updated": "Updated request",
 };
+
+const STATUS_LABELS: Record<string, string> = { open: "open", accepted: "in progress", done: "done", declined: "declined", cancelled: "cancelled" };
+
+/** A short plain-text field that may be a URL: link it only when it is a safe http(s) link. */
+function maybeLink(text: string): string {
+  const href = /^https?:\/\/\S+$/.test(text.trim()) ? safeHref(text.trim()) : null;
+  return href ? `<a href="${esc(href)}" rel="noopener noreferrer">${esc(text.trim())}</a>` : esc(text);
+}
+
+function requestsSection(requests: RequestDetail[], imageBase: string): string {
+  if (!requests.length) return "";
+  const order = (r: RequestDetail) => (r.status === "accepted" ? 0 : r.status === "open" ? 1 : 2);
+  const items = [...requests]
+    .sort((a, b) => order(a) - order(b) || b.createdAt.localeCompare(a.createdAt))
+    .map((r) => {
+      const waiting = r.status === "open" || r.status === "accepted";
+      return `<li class="item request"><div><div class="name">${esc(r.title)} <span class="pill status-${esc(r.status)}${waiting ? " active" : ""}">${esc(STATUS_LABELS[r.status] ?? r.status)}</span></div>
+<div class="meta"><span>For <strong>${esc(r.to)}</strong></span><span>Asked by ${esc(r.createdBy.clientName ?? "Unnamed client")} ${when(r.createdAt)}</span>${
+        r.updatedAt !== r.createdAt ? `<span>Updated by ${esc(r.updatedBy.clientName ?? "Unnamed client")} ${when(r.updatedAt)}</span>` : ""
+      }</div>${r.deliverTo ? `<div class="desc">Deliver to: ${maybeLink(r.deliverTo)}</div>` : ""}${
+        r.result ? `<div class="result md">${renderMarkdown(r.result, { imageBase })}</div>` : ""
+      }${r.details ? `<details class="req-details"><summary>Details</summary><div class="md">${renderMarkdown(r.details, { imageBase })}</div></details>` : ""}</div></li>`;
+    })
+    .join("");
+  return `<h2 class="section">Requests</h2><p class="muted">Work one agent asked another to do. Agents only act on these when their user has told them to.</p><ul class="list">${items}</ul>`;
+}
 
 function dimensions(i: ImageSummary): string {
   return i.width && i.height ? `${i.width} × ${i.height}` : "";
@@ -305,7 +339,7 @@ export function closedBrainPage(user: SiteUser, brain: BrainSummary & { closedAt
   );
 }
 
-export function brainPage(user: SiteUser, brain: BrainIndex, activity: ActivityItem[]): string {
+export function brainPage(user: SiteUser, brain: BrainIndex, activity: ActivityItem[], requests: RequestDetail[] = []): string {
   const base = brainPath(brain.reference);
   const docs = brain.documents.length
     ? `<ul class="list">${brain.documents
@@ -336,7 +370,9 @@ export function brainPage(user: SiteUser, brain: BrainIndex, activity: ActivityI
               ? ` <a href="${esc(`${base}/documents/${e.documentId}`)}">${esc(e.documentTitle)}</a>${e.revision ? ` (revision ${e.revision})` : ""}`
               : e.imageId && e.imageTitle
                 ? ` <a href="${esc(`${base}/images/${e.imageId}`)}">${esc(e.imageTitle)}</a>`
-                : "";
+                : e.requestTitle
+                  ? ` “${esc(e.requestTitle)}”${e.type === "request.created" && e.requestTo ? ` of ${esc(e.requestTo)}` : e.requestStatus ? ` (now ${esc(STATUS_LABELS[e.requestStatus] ?? e.requestStatus)})` : ""}`
+                  : "";
           return `<li><span>${esc(label)}${doc}</span><span class="who">${esc(e.clientName ?? "Unnamed client")}</span>${when(e.at)}</li>`;
         })
         .join("")}</ul>`
@@ -350,6 +386,7 @@ ${brain.description ? `<p class="lead">${esc(brain.description)}</p>` : ""}
 <div class="meta"><span>${plural(brain.usage.documents, "document")} of ${brain.usage.limits.brainDocuments}</span><span>${size(brain.usage.bytes)} of ${size(brain.usage.limits.brainBytes)}</span>${
       brain.usage.images ? `<span>${plural(brain.usage.images, "image")} (${size(brain.usage.imageBytes)})</span>` : ""
     }<span>Created ${when(brain.createdAt)}</span><span>Updated ${when(brain.updatedAt)}</span></div>
+${requestsSection(requests, `${base}/images`)}
 <h2 class="section">Documents</h2>${docs}
 ${images ? `<h2 class="section">Images</h2>${images}` : ""}
 <h2 class="section">Recent activity</h2>${events}`,

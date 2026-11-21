@@ -29,6 +29,7 @@ export interface InstanceConfig {
   LIMIT_IMAGE_BYTES?: string;
   LIMIT_BRAIN_IMAGES?: string;
   LIMIT_BRAIN_IMAGE_BYTES?: string;
+  LIMIT_BRAIN_REQUESTS?: string;
 }
 
 function intOr(value: string | undefined, fallback: number): number {
@@ -46,6 +47,7 @@ export function limitsFrom(config: InstanceConfig): Limits {
     imageBytes: intOr(config.LIMIT_IMAGE_BYTES, DEFAULT_LIMITS.imageBytes),
     brainImages: intOr(config.LIMIT_BRAIN_IMAGES, DEFAULT_LIMITS.brainImages),
     brainImageBytes: intOr(config.LIMIT_BRAIN_IMAGE_BYTES, DEFAULT_LIMITS.brainImageBytes),
+    brainRequests: intOr(config.LIMIT_BRAIN_REQUESTS, DEFAULT_LIMITS.brainRequests),
   };
 }
 
